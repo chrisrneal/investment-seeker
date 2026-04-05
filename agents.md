@@ -21,8 +21,59 @@ After each development task, review and update as needed:
 
 ## Project Structure
 
-_(To be updated as the project evolves.)_
+- `src/app/page.tsx` — landing page with API usage examples.
+- `src/app/layout.tsx` — root layout.
+- `src/app/api/filings/route.ts` — `GET /api/filings` endpoint (App Router route handler).
+- `src/app/api/summarize/route.ts` — `GET /api/summarize` endpoint. AI filing summarizer with two-tier model strategy (Haiku default, Sonnet for deep analysis). Caches results in Supabase.
+- `src/lib/sec.ts` — SEC EDGAR client: token-bucket rate limiter (10 rps),
+  `User-Agent` header, and `searchFilings()` against
+  `https://efts.sec.gov/LATEST/search-index`.
+- `src/lib/types.ts` — shared TypeScript types for filings, transactions, scores, summaries, and API errors.
+- `src/lib/parseForm4.ts` — Form 4 XML parser. Extracts structured insider transaction data from EDGAR XML documents. Flags notable transactions (open-market buys > $100K).
+- `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance.
+- `src/lib/anthropic.ts` — shared singleton Anthropic client instance.
+- `src/lib/supabase.ts` — shared singleton Supabase client instance.
+- `src/lib/costs.ts` — Anthropic API cost estimator from token usage. Accounts for prompt caching discounts.
+- `vercel.json` — Vercel deployment config.
+- `.env.example` — documents all required environment variables.
 
 ## Conventions & Decisions
 
-_(To be updated as conventions are established.)_
+- **Framework:** Next.js App Router + TypeScript. Node runtime for API routes
+  (`export const runtime = "nodejs"`) because SEC calls require a custom
+  `User-Agent` and Node `fetch`.
+- **SEC fair access compliance is mandatory.** Any code making outbound SEC
+  requests MUST go through `secFetch()` in [src/lib/sec.ts](src/lib/sec.ts) —
+  never call `fetch` against `*.sec.gov` directly. This guarantees the
+  token-bucket rate limit (≤10 req/s) and the required `User-Agent` header.
+- **Filing type normalization:** the API accepts human aliases (`4`, `8k`,
+  `13F`, …) which are mapped to EDGAR form codes in `FORM_ALIASES` in
+  `src/app/api/filings/route.ts`. Add new supported forms there.
+- **Sorting:** results are sorted by `filingDate` descending in
+  `searchFilings()` so "recent" filings always come first.
+- **Deployment:** Vercel, preferred via GitHub integration (push-to-deploy).
+  Set all env vars (`SEC_USER_AGENT_EMAIL`, `ANTHROPIC_API_KEY`,
+  `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`) in Vercel project env vars
+  before going live.
+- **AI model strategy:** Two-tier approach for cost optimization. Haiku
+  (`claude-haiku-4-5-20251001`) is the default for routine summaries. Sonnet
+  (`claude-sonnet-4-6-20260401`) is used only when `deep_analysis=true`.
+  The system prompt uses `cache_control: { type: "ephemeral" }` for prompt
+  caching across requests.
+- **Supabase caching:** `/api/summarize` checks Supabase for an existing
+  summary before calling Claude. New summaries are stored after generation.
+  Table schema is documented in `readme.md`. The route degrades gracefully
+  if Supabase is unavailable (skips cache, still returns fresh summary).
+- **Form 4 XML parsing:** Uses lightweight regex-based XML extraction (no
+  external XML library). Handles both `nonDerivativeTransaction` and
+  `derivativeTransaction` blocks. Transaction code "P" = open-market
+  purchase, "S"/"F" = sell, "M"/"A" = option exercise.
+- **Signal scoring:** Five weighted signals summing to max 100. Price dip
+  data comes from Yahoo Finance v8 chart API (free, no key required).
+  Returns 0.5 (neutral) when price data is unavailable so the score
+  degrades gracefully.
+- **Shared type definitions:** All cross-module types live in
+  `src/lib/types.ts`. Import from there rather than redefining types
+  locally.
+- **Consistent API error shape:** All API routes return
+  `{ error: string, detail?: string }` on failure.
