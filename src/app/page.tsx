@@ -1,6 +1,8 @@
 "use client";
 
-import { Fragment, useEffect, useState, useRef, useCallback } from "react";
+import { Fragment, Suspense, useEffect, useState, useRef, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import type { FilingSummary } from "@/lib/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { User, Session } from "@supabase/supabase-js";
@@ -628,6 +630,27 @@ function ProgressBar({ job }: { job: IngestJob }) {
 // ── Component ──────────────────────────────────────────────────────
 
 export default function Home() {
+  return (
+    <Suspense>
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
+  const searchParams = useSearchParams();
+  const [routeError, setRouteError] = useState("");
+
+  // Show error from redirect (e.g. company not found)
+  useEffect(() => {
+    const err = searchParams.get("error");
+    if (err) {
+      setRouteError(err);
+      // Clean the URL without reloading
+      window.history.replaceState({}, "", "/");
+    }
+  }, [searchParams]);
+
   const [hours, setHours] = useState(72);
   const [job, setJob] = useState<IngestJob | null>(null);
   const [ingestResult, setIngestResult] = useState<string | null>(null);
@@ -1043,6 +1066,39 @@ export default function Home() {
       </div>
       {authError && <p style={{ color: "#ff8a8a", fontSize: 13, margin: "6px 0 0" }}>{authError}</p>}
 
+      {/* Route-level error (e.g. company not found redirect) */}
+      {routeError && (
+        <div
+          style={{
+            marginTop: 16,
+            padding: "12px 16px",
+            background: "#2d0d0d",
+            border: "1px solid #5a1a1a",
+            borderRadius: 8,
+            color: "#ff8a8a",
+            fontSize: 14,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span>{routeError}</span>
+          <button
+            onClick={() => setRouteError("")}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#ff8a8a",
+              cursor: "pointer",
+              fontSize: 16,
+              padding: "0 4px",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* ── Ingest Panel ── */}
       <section style={{ ...panel, marginTop: 24 }}>
         <h2 style={{ margin: 0, fontSize: 20 }}>Ingest Filings</h2>
@@ -1167,9 +1223,19 @@ export default function Home() {
                 <div>
                   <strong style={{ fontSize: 16 }}>{company.name}</strong>
                   {company.ticker && (
-                    <span style={{ color: "#7cc4ff", marginLeft: 10, fontWeight: 600 }}>
+                    <Link
+                      href={`/company/${encodeURIComponent(company.ticker)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        color: "#7cc4ff",
+                        marginLeft: 10,
+                        fontWeight: 600,
+                        textDecoration: "none",
+                        borderBottom: "1px dashed #7cc4ff40",
+                      }}
+                    >
                       {company.ticker}
-                    </span>
+                    </Link>
                   )}
                   {company.latestTransactionDate && (
                     <span style={{ color: "#7a8a9a", marginLeft: 10, fontSize: 13 }}>
