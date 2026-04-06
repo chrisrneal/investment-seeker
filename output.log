@@ -1099,3 +1099,5 @@
  GET /api/filings/ingest?jobId=6971ad9b-c06e-4854-9521-5616ec44d546 200 in 3ms (next.js: 1180µs, application-code: 1953µs)
 [companies] found 2 cached summaries for 297 filing URLs
  GET /api/companies?limit=100 200 in 1636ms (next.js: 858µs, application-code: 1635ms)
+ GET /api/summarize?url=https%3A%2F%2Fwww.sec.gov%2FArchives%2Fedgar%2Fdata%2F1551757%2F000155175726000006%2F0001551757-26-000006-index.htm&filing_type=4 200 in 424ms (next.js: 2ms, application-code: 421ms)
+ GET /api/summarize?url=https%3A%2F%2Fwww.sec.gov%2FArchives%2Fedgar%2Fdata%2F1861553%2F000186155326000002%2F0001861553-26-000002-index.htm&filing_type=4 200 in 428ms (next.js: 8ms, application-code: 420ms)
