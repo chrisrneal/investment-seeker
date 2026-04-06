@@ -28,6 +28,8 @@ After each development task, review and update as needed:
 - `src/app/api/filings/ingest/8k/route.ts` — Standalone `POST /api/filings/ingest/8k` endpoint (also called by the unified ingest pipeline).
 - `src/app/api/filings/ingest/13f/route.ts` — Standalone `POST /api/filings/ingest/13f` endpoint (also called by the unified ingest pipeline).
 - `src/app/api/companies/route.ts` — `GET /api/companies` endpoint. Returns companies ordered by most recent transaction, with nested insiders and their transaction history. Also joins `filing_summaries` to include any cached AI summaries keyed by filing URL in the response.
+- `src/app/api/companies/[ticker]/route.ts` — `GET /api/companies/[ticker]` endpoint. Returns a single company by ticker symbol (case-insensitive) with insiders, transactions, 8-K events, 13F holdings, and cached AI summaries. Returns 404 if ticker not found.
+- `src/app/company/[ticker]/page.tsx` — Company detail page (client component). Shows a single company's full details including insiders, transactions, 8-K events, 13F holdings, and AI summary integration. Redirects to home with error banner if ticker not found.
 - `src/app/api/summarize/route.ts` — `GET /api/summarize` endpoint. **Requires authentication.** AI filing summarizer with two-tier model strategy (Haiku default, Sonnet for deep analysis). Verifies Supabase session via `getAuthUser()` before proceeding. Caches results in Supabase.
 - `src/app/auth/callback/route.ts` — OAuth/email confirmation callback. Exchanges the `code` query param for a Supabase session and sets cookies.
 - `src/lib/auth.ts` — Server-side auth helper. `getAuthUser(req)` verifies the Supabase session cookie and returns the `User` or `null`. `unauthorizedResponse()` returns a standard 401 JSON.
@@ -123,3 +125,12 @@ After each development task, review and update as needed:
   staleness threshold). Jobs are cleaned up after 1 hour. Only one
   ingest job runs at a time — concurrent POSTs return the existing
   job's ID.
+- **Clickable tickers:** Company tickers on the home page are Next.js
+  `<Link>` elements pointing to `/company/[ticker]`. The company detail
+  page fetches data from `/api/companies/[ticker]`. If a ticker is not
+  found (404), the page redirects to `/` with an `?error=` query param
+  that shows a dismissable error banner.
+- **Suspense boundary for useSearchParams:** The home page uses
+  `useSearchParams()` to read the `?error=` query param. Next.js requires
+  this to be wrapped in a `<Suspense>` boundary. The exported `Home`
+  component wraps `HomeContent` in Suspense.
