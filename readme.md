@@ -173,6 +173,7 @@ To enable auth, you need `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_AN
 
 The company-centric UI (`src/app/page.tsx`) exposes the summarize API inline:
 
+- **Paginated company list** — companies are displayed 20 per page with Previous/Next navigation controls at both the top and bottom of the list. Companies are sorted by most recent transaction date (descending), so the most recently active companies appear first.
 - **Per-row buttons** — each transaction row has a `▾ AI` button (standard Haiku summary) and a `🔬` button (deep Sonnet analysis). Clicking opens an expandable panel below the row.
 - **Deduplication** — multiple rows sharing the same accession number reuse the same cached result; only one fetch fires per unique URL.
 - **Summary panel** — shows impact badge (color-coded: Positive=green, Negative=red, Mixed=yellow, Neutral=gray), summary text, flag list, parsed transactions sub-table, and a footer with model name, estimated cost, and `⚡ cached` indicator.

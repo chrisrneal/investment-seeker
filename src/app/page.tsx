@@ -665,6 +665,9 @@ function HomeContent() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Active tab per company: "insiders" | "8k" | "13f"
   const [activeTab, setActiveTab] = useState<Map<string, string>>(new Map());
+  // ── Pagination state ──
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 20;
 
   // ── Auth state ─────────────────────────────────────────────────
   const supabaseRef = useRef(getSupabaseBrowserClient());
@@ -848,6 +851,7 @@ function HomeContent() {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error ?? "Failed to load");
       setCompanies(data.companies ?? []);
+      setCurrentPage(1);
 
       // Pre-populate cached summaries from the API response
       if (data.summaries && typeof data.summaries === "object") {
@@ -1044,6 +1048,12 @@ function HomeContent() {
     (n, c) => n + c.insiders.reduce((m, i) => m + i.transactions.length, 0),
     0,
   );
+
+  // ── Pagination ──
+  const totalPages = Math.max(1, Math.ceil(companies.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageStart = (safePage - 1) * PAGE_SIZE;
+  const paginatedCompanies = companies.slice(pageStart, pageStart + PAGE_SIZE);
 
   return (
     <main style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px 80px" }}>
@@ -1244,10 +1254,47 @@ function HomeContent() {
             <h2 style={{ margin: 0, fontSize: 20 }}>Companies</h2>
             {companies.length > 0 && (
               <span style={{ color: "#7a8a9a", fontSize: 13 }}>
+                Showing {pageStart + 1}–{Math.min(pageStart + PAGE_SIZE, companies.length)} of{" "}
                 {companies.length} companies · {totalInsiders} insiders · {totalTxns} transactions
               </span>
             )}
           </div>
+          {/* Pagination controls */}
+          {companies.length > PAGE_SIZE && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button
+                onClick={() => setCurrentPage(1)}
+                disabled={safePage <= 1}
+                style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage <= 1 ? 0.4 : 1 }}
+              >
+                «
+              </button>
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
+                style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage <= 1 ? 0.4 : 1 }}
+              >
+                ‹ Prev
+              </button>
+              <span style={{ color: "#9aa4ad", fontSize: 13, minWidth: 80, textAlign: "center" }}>
+                Page {safePage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
+                style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage >= totalPages ? 0.4 : 1 }}
+              >
+                Next ›
+              </button>
+              <button
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={safePage >= totalPages}
+                style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage >= totalPages ? 0.4 : 1 }}
+              >
+                »
+              </button>
+            </div>
+          )}
         </div>
 
         {loadError && <p style={{ color: "#ff8a8a", marginTop: 10 }}>{loadError}</p>}
@@ -1258,7 +1305,7 @@ function HomeContent() {
           </p>
         )}
 
-        {companies.map((company) => {
+        {paginatedCompanies.map((company) => {
           const isOpen = expanded.has(company.cik);
           const txnCount = company.insiders.reduce(
             (n, i) => n + i.transactions.length,
@@ -1867,6 +1914,53 @@ function HomeContent() {
             </div>
           );
         })}
+
+        {/* Bottom pagination controls */}
+        {companies.length > PAGE_SIZE && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 16,
+              paddingTop: 16,
+              borderTop: "1px solid #1e2832",
+            }}
+          >
+            <button
+              onClick={() => { setCurrentPage(1); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              disabled={safePage <= 1}
+              style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage <= 1 ? 0.4 : 1 }}
+            >
+              «
+            </button>
+            <button
+              onClick={() => { setCurrentPage((p) => Math.max(1, p - 1)); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              disabled={safePage <= 1}
+              style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage <= 1 ? 0.4 : 1 }}
+            >
+              ‹ Prev
+            </button>
+            <span style={{ color: "#9aa4ad", fontSize: 13, minWidth: 80, textAlign: "center" }}>
+              Page {safePage} of {totalPages}
+            </span>
+            <button
+              onClick={() => { setCurrentPage((p) => Math.min(totalPages, p + 1)); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              disabled={safePage >= totalPages}
+              style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage >= totalPages ? 0.4 : 1 }}
+            >
+              Next ›
+            </button>
+            <button
+              onClick={() => { setCurrentPage(totalPages); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              disabled={safePage >= totalPages}
+              style={{ ...btn("#2e3a4a"), padding: "6px 10px", fontSize: 13, opacity: safePage >= totalPages ? 0.4 : 1 }}
+            >
+              »
+            </button>
+          </div>
+        )}
       </section>
     </main>
   );
