@@ -44,9 +44,11 @@ The endpoint runs the work **server-side in the background** — the POST return
 
 ```
 POST /api/filings/ingest?hours=24
+POST /api/filings/ingest?ticker=AAPL
 ```
 
-- `hours` (optional) — time window in hours (1–168). Defaults to 24.
+- `hours` (optional) — time window in hours. Defaults to 24 for broad ingests (max 168), or 720 (30 days) for ticker searches (max 720).
+- `ticker` (optional) — company ticker symbol (e.g. `AAPL`). When provided, only filings matching that ticker are fetched. The completed job result includes `ticker` and `totalFilingsFetched` so the client can detect when no filings were found.
 
 #### Response
 

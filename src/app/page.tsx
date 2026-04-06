@@ -657,6 +657,8 @@ function HomeContent() {
   const [ingestError, setIngestError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const [tickerSearch, setTickerSearch] = useState("");
+
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -734,19 +736,30 @@ function HomeContent() {
           if (data.status === "completed") {
             stopPolling();
             const r = data.result;
-            const parts: string[] = [];
-            if (r?.transactions) parts.push(`${r.transactions} insider txns`);
-            if (r?.eightKEvents) parts.push(`${r.eightKEvents} 8-K events`);
-            if (r?.thirteenFHoldings) parts.push(`${r.thirteenFHoldings} 13F holdings`);
-            const failTotal =
-              ((r?.ownershipFailed as number) ?? 0) +
-              ((r?.eightKFailed as number) ?? 0) +
-              ((r?.thirteenFFailed as number) ?? 0);
-            setIngestResult(
-              `Ingested ${parts.join(", ")} across ${r?.companies ?? 0} companies` +
-                (failTotal ? ` (${failTotal} failed to parse)` : ""),
-            );
-            loadCompanies();
+            const tickerSearched = r?.ticker as string | null;
+            const totalFetched = (r?.totalFilingsFetched as number) ?? -1;
+
+            if (tickerSearched && totalFetched === 0) {
+              // Ticker-specific search found nothing
+              setIngestError(
+                `No filings found for "${tickerSearched}" in the last 30 days. Check the ticker symbol and try again.`,
+              );
+            } else {
+              const parts: string[] = [];
+              if (r?.transactions) parts.push(`${r.transactions} insider txns`);
+              if (r?.eightKEvents) parts.push(`${r.eightKEvents} 8-K events`);
+              if (r?.thirteenFHoldings) parts.push(`${r.thirteenFHoldings} 13F holdings`);
+              const failTotal =
+                ((r?.ownershipFailed as number) ?? 0) +
+                ((r?.eightKFailed as number) ?? 0) +
+                ((r?.thirteenFFailed as number) ?? 0);
+              const tickerNote = tickerSearched ? ` for ${tickerSearched}` : "";
+              setIngestResult(
+                `Ingested ${parts.join(", ")} across ${r?.companies ?? 0} companies${tickerNote}` +
+                  (failTotal ? ` (${failTotal} failed to parse)` : ""),
+              );
+              loadCompanies();
+            }
             setTimeout(() => setJob(null), 4000);
           } else if (data.status === "failed") {
             stopPolling();
@@ -804,6 +817,26 @@ function HomeContent() {
       setIngestError("Ingestion cancelled");
     } catch (e) {
       setIngestError(e instanceof Error ? e.message : "Unknown error");
+    }
+  }
+
+  async function searchTicker(e: React.FormEvent) {
+    e.preventDefault();
+    const ticker = tickerSearch.trim().toUpperCase();
+    if (!ticker) return;
+    setIngestError("");
+    setIngestResult(null);
+    try {
+      const res = await fetch(
+        `/api/filings/ingest?ticker=${encodeURIComponent(ticker)}`,
+        { method: "POST" },
+      );
+      const data = await res.json();
+      if (!data.jobId) throw new Error(data.error ?? "Failed to start search");
+      setJob({ id: data.jobId, status: "running" });
+      startPolling(data.jobId);
+    } catch (err) {
+      setIngestError(err instanceof Error ? err.message : "Unknown error");
     }
   }
 
@@ -1105,6 +1138,51 @@ function HomeContent() {
         <p style={{ color: "#7a8a9a", fontSize: 13, marginTop: 4 }}>
           Pull insider ownership (Forms 3, 4, 5), 8-K events, and 13F-HR holdings from SEC EDGAR.
         </p>
+
+        {/* ── Ticker Search ── */}
+        <form
+          onSubmit={searchTicker}
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            marginTop: 14,
+            paddingBottom: 14,
+            borderBottom: "1px solid #1e2832",
+          }}
+        >
+          <label>
+            <div style={{ fontSize: 12, color: "#a9bfd5", marginBottom: 4 }}>Search by ticker</div>
+            <input
+              type="text"
+              placeholder="e.g. AAPL"
+              value={tickerSearch}
+              onChange={(e) => setTickerSearch(e.target.value)}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 6,
+                border: "1px solid #2a3a4a",
+                background: "#0e151d",
+                color: "#e6e8eb",
+                fontSize: 14,
+                width: 140,
+                textTransform: "uppercase",
+              }}
+            />
+          </label>
+          <button type="submit" disabled={ingesting || !tickerSearch.trim()} style={btn("#1a6dd4")}>
+            {ingesting ? "Searching…" : "Search Ticker"}
+          </button>
+          <span style={{ color: "#5a6a7a", fontSize: 12, alignSelf: "center" }}>
+            Loads filings from the last 30 days
+          </span>
+        </form>
+
+        {/* ── Broad Ingest ── */}
+        <div style={{ fontSize: 12, color: "#5a6a7a", marginTop: 12, marginBottom: 4 }}>
+          Or ingest all recent filings:
+        </div>
         <div
           style={{
             display: "flex",
