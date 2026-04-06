@@ -123,18 +123,37 @@ function buildFilingLink(accessionNo: string, cik: string | null): string {
 export type SearchFilingsParams = {
   formType: string; // "4" | "8-K" | "13F" | "13F-HR" | ...
   ticker?: string;
-  limit?: number;
+  /** Date range filter (YYYY-MM-DD). Both inclusive. */
+  startDate?: string;
+  endDate?: string;
+  /** Max results per page (EDGAR max is 100). */
+  pageSize?: number;
+  /** Pagination offset (0-based). */
+  from?: number;
+};
+
+export type SearchFilingsResult = {
+  results: FilingResult[];
+  total: number; // total matching results reported by EDGAR
 };
 
 export async function searchFilings(
   params: SearchFilingsParams
-): Promise<FilingResult[]> {
-  const { formType, ticker, limit = 20 } = params;
+): Promise<SearchFilingsResult> {
+  const { formType, ticker, startDate, endDate, pageSize = 100, from = 0 } = params;
 
   const url = new URL("https://efts.sec.gov/LATEST/search-index");
   // q is required by EDGAR; use ticker if present, else empty string.
   url.searchParams.set("q", ticker ? `"${ticker}"` : "");
   url.searchParams.set("forms", formType);
+  url.searchParams.set("from", String(from));
+  url.searchParams.set("size", String(Math.min(pageSize, 100)));
+
+  if (startDate && endDate) {
+    url.searchParams.set("dateRange", "custom");
+    url.searchParams.set("startdt", startDate);
+    url.searchParams.set("enddt", endDate);
+  }
 
   const res = await secFetch(url.toString());
   if (!res.ok) {
@@ -142,14 +161,10 @@ export async function searchFilings(
   }
   const data = (await res.json()) as EdgarResponse;
 
+  const total = data.hits?.total?.value ?? 0;
   const hits = data.hits?.hits ?? [];
-  // Sort by filing date descending so "recent" filings come first.
-  const sorted = [...hits].sort((a, b) => {
-    const da = a._source.file_date ?? "";
-    const db = b._source.file_date ?? "";
-    return db.localeCompare(da);
-  });
-  const results: FilingResult[] = sorted.slice(0, limit).map((h) => {
+
+  const results: FilingResult[] = hits.map((h) => {
     const src = h._source;
     const displayName = src.display_names?.[0];
     const filerName = displayName?.replace(/\s*\(CIK.*$/, "").trim() ?? "";
@@ -172,5 +187,40 @@ export async function searchFilings(
     };
   });
 
-  return results;
+  return { results, total };
+}
+
+/**
+ * Paginate through all EDGAR search results for a form type within a date range.
+ * - Caps at `maxResults` to stay within SEC fair-access bounds.
+ * - Each page is 100 results (EDGAR max per request).
+ * - EDGAR caps `from` at 10,000 — we respect that hard limit.
+ */
+export async function searchAllFilings(
+  params: Omit<SearchFilingsParams, "from" | "pageSize"> & { maxResults?: number }
+): Promise<FilingResult[]> {
+  const PAGE_SIZE = 100;
+  const EDGAR_MAX_FROM = 10_000; // Elasticsearch default max window
+  const maxResults = Math.min(params.maxResults ?? 2000, EDGAR_MAX_FROM);
+
+  const allResults: FilingResult[] = [];
+  let from = 0;
+
+  while (from < maxResults) {
+    const { results, total } = await searchFilings({
+      ...params,
+      pageSize: PAGE_SIZE,
+      from,
+    });
+
+    allResults.push(...results);
+    from += PAGE_SIZE;
+
+    // Stop if we've fetched everything or hit our cap
+    if (results.length < PAGE_SIZE || from >= total || allResults.length >= maxResults) {
+      break;
+    }
+  }
+
+  return allResults.slice(0, maxResults);
 }

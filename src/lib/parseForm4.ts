@@ -33,6 +33,18 @@ function num(s: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Extract a numeric value from an SEC XML element that may use either
+ * `<tag>123</tag>` or `<tag><value>123</value></tag>` patterns.
+ */
+function numTag(xml: string, tag: string): number {
+  const inner = extractTag(xml, tag);
+  if (!inner) return 0;
+  // Try nested <value> first, then raw content
+  const v = extractTag(inner, "value");
+  return num(v || inner);
+}
+
 // ── Transaction code mapping ───────────────────────────────────────
 
 function mapTransactionType(code: string): TransactionType {
@@ -75,6 +87,7 @@ export async function parseForm4(url: string): Promise<ParsedForm4> {
   const ownerBlock = extractTag(xml, "reportingOwner");
   const ownerId = extractTag(ownerBlock, "reportingOwnerId");
   const officerName = extractTag(ownerId, "rptOwnerName");
+  const ownerCik = extractTag(ownerId, "rptOwnerCik");
 
   const ownerRelationship = extractTag(ownerBlock, "reportingOwnerRelationship");
   const officerTitle =
@@ -82,6 +95,16 @@ export async function parseForm4(url: string): Promise<ParsedForm4> {
     (extractTag(ownerRelationship, "isDirector").match(/true|1/i)
       ? "Director"
       : "Reporting Person");
+
+  // Determine relationship type
+  const relationship =
+    extractTag(ownerRelationship, "isOfficer").match(/true|1/i)
+      ? "officer"
+      : extractTag(ownerRelationship, "isDirector").match(/true|1/i)
+        ? "director"
+        : extractTag(ownerRelationship, "isTenPercentOwner").match(/true|1/i)
+          ? "tenPercentOwner"
+          : "other";
 
   // ── Non-derivative transactions ──
   const ndTable = extractTag(xml, "nonDerivativeTable");
@@ -97,17 +120,14 @@ export async function parseForm4(url: string): Promise<ParsedForm4> {
     const coding = extractTag(row, "transactionCoding");
     const code = extractTag(coding, "transactionCode") as TransactionCode;
     const amounts = extractTag(row, "transactionAmounts");
-    const shares = num(extractTag(amounts, "transactionShares") || extractAttr(amounts, "transactionShares", "value"));
-    const price = num(extractTag(amounts, "transactionPricePerShare") || extractAttr(amounts, "transactionPricePerShare", "value"));
+    const shares = numTag(amounts, "transactionShares");
+    const price = numTag(amounts, "transactionPricePerShare");
     const postOwnership = extractTag(row, "postTransactionAmounts");
-    const sharesOwnedAfter = num(
-      extractTag(postOwnership, "sharesOwnedFollowingTransaction") ||
-      extractAttr(postOwnership, "sharesOwnedFollowingTransaction", "value")
-    );
+    const sharesOwnedAfter = numTag(postOwnership, "sharesOwnedFollowingTransaction");
     const ownershipNature = extractTag(row, "ownershipNature");
-    const isDirect = extractTag(ownershipNature, "directOrIndirectOwnership")
-      .toUpperCase()
-      .startsWith("D");
+    const dirValue = extractTag(extractTag(ownershipNature, "directOrIndirectOwnership"), "value")
+      || extractTag(ownershipNature, "directOrIndirectOwnership");
+    const isDirect = dirValue.toUpperCase().startsWith("D");
 
     const txnDate = extractTag(row, "transactionDate");
     const dateValue = extractTag(txnDate, "value") || txnDate;
@@ -130,17 +150,14 @@ export async function parseForm4(url: string): Promise<ParsedForm4> {
     const coding = extractTag(row, "transactionCoding");
     const code = extractTag(coding, "transactionCode") as TransactionCode;
     const amounts = extractTag(row, "transactionAmounts");
-    const shares = num(extractTag(amounts, "transactionShares") || extractAttr(amounts, "transactionShares", "value"));
-    const price = num(extractTag(amounts, "transactionPricePerShare") || extractAttr(amounts, "transactionPricePerShare", "value"));
+    const shares = numTag(amounts, "transactionShares");
+    const price = numTag(amounts, "transactionPricePerShare");
     const postOwnership = extractTag(row, "postTransactionAmounts");
-    const sharesOwnedAfter = num(
-      extractTag(postOwnership, "sharesOwnedFollowingTransaction") ||
-      extractAttr(postOwnership, "sharesOwnedFollowingTransaction", "value")
-    );
+    const sharesOwnedAfter = numTag(postOwnership, "sharesOwnedFollowingTransaction");
     const ownershipNature = extractTag(row, "ownershipNature");
-    const isDirect = extractTag(ownershipNature, "directOrIndirectOwnership")
-      .toUpperCase()
-      .startsWith("D");
+    const dirValue = extractTag(extractTag(ownershipNature, "directOrIndirectOwnership"), "value")
+      || extractTag(ownershipNature, "directOrIndirectOwnership");
+    const isDirect = dirValue.toUpperCase().startsWith("D");
 
     const txnDate = extractTag(row, "transactionDate");
     const dateValue = extractTag(txnDate, "value") || txnDate;
@@ -168,6 +185,10 @@ export async function parseForm4(url: string): Promise<ParsedForm4> {
     issuerName,
     issuerTicker,
     issuerCik,
+    ownerCik,
+    ownerName: officerName,
+    ownerTitle: officerTitle,
+    ownerRelationship: relationship,
     filingUrl: url,
     transactions,
     notable,

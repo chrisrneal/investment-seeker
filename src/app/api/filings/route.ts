@@ -6,8 +6,12 @@ export const dynamic = "force-dynamic";
 
 // Supported filing types. We normalize common aliases to EDGAR form codes.
 const FORM_ALIASES: Record<string, string> = {
+  "3": "3",
+  "form3": "3",
   "4": "4",
   "form4": "4",
+  "5": "5",
+  "form5": "5",
   "8-k": "8-K",
   "8k": "8-K",
   "form8-k": "8-K",
@@ -53,11 +57,12 @@ export async function GET(req: NextRequest) {
   );
 
   try {
-    const results = await searchFilings({ formType, ticker, limit });
+    const { results, total } = await searchFilings({ formType, ticker, pageSize: limit });
     return NextResponse.json(
       {
         query: { type: formType, ticker: ticker ?? null, limit },
         count: results.length,
+        total,
         results,
       },
       {

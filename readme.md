@@ -12,7 +12,7 @@ Search recent SEC filings from the EDGAR full-text search index.
 GET /api/filings?type=<4|8-K|13F>&ticker=<TICKER>&limit=<1-100>
 ```
 
-- `type` (required) — filing form. Accepted aliases: `4`, `form4`, `8-K`, `8k`, `13F`, `13F-HR`, `13F-NT`.
+- `type` (required) — filing form. Accepted aliases: `3`, `form3`, `4`, `form4`, `5`, `form5`, `8-K`, `8k`, `13F`, `13F-HR`, `13F-NT`.
 - `ticker` (optional) — company ticker, e.g. `AAPL`.
 - `limit` (optional) — 1–100, default 20.
 
@@ -35,6 +35,87 @@ GET /api/filings?type=<4|8-K|13F>&ticker=<TICKER>&limit=<1-100>
   ]
 }
 ```
+
+### POST /api/filings/ingest
+
+Fetches all recent SEC filings — insider ownership (Forms 3, 4, 5), 8-K events, and 13F-HR institutional holdings — parses each type, and upserts into the database in one unified pipeline.
+
+The endpoint runs the work **server-side in the background** — the POST returns immediately with a `jobId`, and the actual ingestion continues even if the client disconnects. Poll the GET endpoint for progress.
+
+```
+POST /api/filings/ingest?hours=24
+```
+
+- `hours` (optional) — time window in hours (1–168). Defaults to 24.
+
+#### Response
+
+```json
+{ "jobId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" }
+```
+
+### GET /api/filings/ingest
+
+Poll ingestion job progress. Returns the current step, sub-progress, and timing info.
+
+```
+GET /api/filings/ingest?jobId=<JOB_ID>
+```
+
+- `jobId` (optional) — if omitted, returns any currently running job (useful after a page refresh).
+
+#### Response (running)
+
+```json
+{
+  "id": "...",
+  "status": "running",
+  "steps": [
+    { "label": "Fetching Form 3 filings", "status": "done" },
+    { "label": "Fetching Form 4 filings", "status": "done" },
+    { "label": "Fetching Form 5 filings", "status": "done" },
+    { "label": "Fetching 8-K filings", "status": "done" },
+    { "label": "Fetching 13F-HR filings", "status": "done" },
+    { "label": "Parsing ownership XML", "status": "active", "progress": { "current": 120, "total": 500 } },
+    { "label": "Parsing 8-K filings", "status": "pending" },
+    { "label": "Parsing 13F-HR filings", "status": "pending" },
+    { "label": "Saving to database", "status": "pending" }
+  ],
+  "currentStep": 3,
+  "startedAt": 1712345678000,
+  "updatedAt": 1712345690000
+}
+```
+
+#### Response (completed)
+
+```json
+{
+  "id": "...",
+  "status": "completed",
+  "result": {
+    "ownershipParsed": 102,
+    "ownershipFailed": 3,
+    "companies": 85,
+    "insiders": 98,
+    "transactions": 264,
+    "eightKEvents": 340,
+    "eightKFailed": 5,
+    "thirteenFHoldings": 1200,
+    "thirteenFFailed": 2
+  }
+}
+```
+
+### GET /api/companies
+
+Returns companies ordered by most recent insider transaction. Each company includes its insiders and their transaction history.
+
+```
+GET /api/companies?limit=50
+```
+
+- `limit` (optional) — 1–200, default 50.
 
 ### GET /api/summarize
 
@@ -66,7 +147,7 @@ Summaries are cached in Supabase. Subsequent requests for the same filing URL re
 
 ### parseForm4 (`src/lib/parseForm4.ts`)
 
-Fetches and parses Form 4 XML from EDGAR into structured insider transaction data:
+Fetches and parses SEC ownership XML (Forms 3, 4, 5) from EDGAR into structured insider transaction data:
 
 - Officer name, title, transaction type (buy/sell/exercise)
 - Shares traded, price per share, total dollar value
@@ -121,12 +202,78 @@ npm run dev
 |---|---|---|
 | `SEC_USER_AGENT_EMAIL` | Yes | Contact email for SEC User-Agent header |
 | `ANTHROPIC_API_KEY` | For /api/summarize | Anthropic API key |
-| `SUPABASE_URL` | For /api/summarize | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | For /api/summarize | Supabase service role key |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
+| `DATABASE_URL` | For migrations | Postgres connection string (Supabase Dashboard → Settings → Database) |
 
-### Supabase table
+### Database migrations
 
-The `/api/summarize` endpoint requires a `filing_summaries` table:
+Tables are managed via SQL migrations in the `migrations/` directory.
+
+```bash
+# Check migration status
+npm run migrate:status
+
+# Apply pending migrations
+npm run migrate
+```
+
+Migrations require the `DATABASE_URL` env var.
+
+### Supabase tables
+
+The normalized schema has four tables (created by migration `001_normalized_schema.sql`):
+
+```sql
+-- Companies (issuers), keyed by SEC CIK
+create table companies (
+  cik text primary key,
+  name text not null,
+  ticker text,
+  updated_at timestamptz not null default now()
+);
+
+-- Insiders (reporting owners), keyed by their SEC CIK
+create table insiders (
+  cik text primary key,
+  name text not null,
+  updated_at timestamptz not null default now()
+);
+
+-- Junction: which insiders belong to which companies
+create table company_insiders (
+  id bigint generated always as identity primary key,
+  company_cik text not null references companies(cik),
+  insider_cik text not null references insiders(cik),
+  title text,
+  relationship text,
+  updated_at timestamptz not null default now(),
+  unique (company_cik, insider_cik)
+);
+
+-- Individual transactions parsed from ownership filings
+create table transactions (
+  id bigint generated always as identity primary key,
+  accession_no text not null,
+  company_cik text not null references companies(cik),
+  insider_cik text not null references insiders(cik),
+  filing_type text not null,
+  filing_url text not null,
+  transaction_date text not null,
+  transaction_type text not null,
+  transaction_code text,
+  shares numeric not null default 0,
+  price_per_share numeric not null default 0,
+  total_value numeric not null default 0,
+  shares_owned_after numeric not null default 0,
+  is_direct_ownership boolean default true,
+  filed_at text not null,
+  created_at timestamptz not null default now(),
+  unique (accession_no, transaction_date, transaction_code, shares, insider_cik)
+);
+```
+
+The `filing_summaries` table (for AI summarization caching) remains unchanged:
 
 ```sql
 create table filing_summaries (
@@ -167,16 +314,23 @@ npx vercel --prod    # deploy to production
 src/
   app/
     api/
-      filings/route.ts     # GET /api/filings
-      summarize/route.ts   # GET /api/summarize
+      companies/route.ts     # GET /api/companies
+      filings/
+        route.ts             # GET /api/filings (EDGAR search)
+        ingest/route.ts      # POST /api/filings/ingest
+      summarize/route.ts     # GET /api/summarize
     layout.tsx
-    page.tsx               # homepage with usage examples
+    page.tsx                 # company-centric insider tracking UI
   lib/
-    anthropic.ts           # shared Anthropic client
-    costs.ts               # token cost estimator
-    parseForm4.ts          # Form 4 XML parser
-    scoreSignal.ts         # insider transaction scoring engine
-    sec.ts                 # rate-limited EDGAR fetch + search
-    supabase.ts            # shared Supabase client
-    types.ts               # shared TypeScript type definitions
+    anthropic.ts             # shared Anthropic client
+    costs.ts                 # token cost estimator
+    parseForm4.ts            # ownership XML parser (Forms 3/4/5)
+    scoreSignal.ts           # insider transaction scoring engine
+    sec.ts                   # rate-limited EDGAR fetch + search
+    supabase.ts              # shared Supabase client
+    types.ts                 # shared TypeScript type definitions
+scripts/
+  migrate.ts                 # database migration runner
+migrations/
+  001_normalized_schema.sql  # companies, insiders, transactions tables
 ```

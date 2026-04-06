@@ -3,7 +3,8 @@ import { getAnthropicClient } from "@/lib/anthropic";
 import { getSupabaseClient } from "@/lib/supabase";
 import { estimateCost } from "@/lib/costs";
 import { secFetch } from "@/lib/sec";
-import type { ApiError, FilingSummary, ImpactRating } from "@/lib/types";
+import { parseForm4 } from "@/lib/parseForm4";
+import type { ApiError, FilingSummary, ImpactRating, SummaryTransaction } from "@/lib/types";
 import type { TextBlock } from "@anthropic-ai/sdk/resources/messages.js";
 
 export const runtime = "nodejs";
@@ -61,6 +62,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const filingUrl = searchParams.get("url");
   const deepAnalysis = searchParams.get("deep_analysis") === "true";
+  const filingType = searchParams.get("filing_type") || null;
 
   if (!filingUrl) {
     return errorJson(
@@ -88,18 +90,48 @@ export async function GET(req: NextRequest) {
   let supabase: ReturnType<typeof getSupabaseClient> | null = null;
   try {
     supabase = getSupabaseClient();
-    const { data: cached } = await supabase
+    const { data: cached, error: cacheError } = await supabase
       .from("filing_summaries")
-      .select("summary, impact_rating, flags, model_used, estimated_cost")
+      .select("summary, impact_rating, flags, ticker, issuer_name, filing_type, transactions, model_used, estimated_cost")
       .eq("filing_url", filingUrl)
       .eq("deep_analysis", deepAnalysis)
       .maybeSingle();
+
+    // If the new columns don't exist yet, retry with the original columns
+    if (cacheError && !cached) {
+      const { data: legacyCached } = await supabase
+        .from("filing_summaries")
+        .select("summary, impact_rating, flags, model_used, estimated_cost")
+        .eq("filing_url", filingUrl)
+        .eq("deep_analysis", deepAnalysis)
+        .maybeSingle();
+
+      if (legacyCached) {
+        const result: FilingSummary = {
+          summary: legacyCached.summary,
+          impactRating: legacyCached.impact_rating as ImpactRating,
+          flags: legacyCached.flags ?? [],
+          ticker: null,
+          issuerName: null,
+          filingType: null,
+          transactions: [],
+          modelUsed: legacyCached.model_used,
+          estimatedCost: legacyCached.estimated_cost,
+          cached: true,
+        };
+        return NextResponse.json(result);
+      }
+    }
 
     if (cached) {
       const result: FilingSummary = {
         summary: cached.summary,
         impactRating: cached.impact_rating as ImpactRating,
         flags: cached.flags ?? [],
+        ticker: cached.ticker ?? null,
+        issuerName: cached.issuer_name ?? null,
+        filingType: cached.filing_type ?? null,
+        transactions: cached.transactions ?? [],
         modelUsed: cached.model_used,
         estimatedCost: cached.estimated_cost,
         cached: true,
@@ -133,6 +165,44 @@ export async function GET(req: NextRequest) {
       err instanceof Error ? err.message : "Unknown error",
       502
     );
+  }
+
+  // ── Parse structured transaction data for Form 4 ──
+  let transactions: SummaryTransaction[] = [];
+  let ticker: string | null = null;
+  let issuerName: string | null = null;
+
+  if (["3", "4", "5"].includes(filingType ?? "")) {
+    try {
+      // Find the raw XML document URL from the index page.
+      // EDGAR index pages list two XML links — an XSL-rendered HTML
+      // view (contains "xsl" in path) and the raw XML. We need the raw one.
+      const xmlMatches = [...filingText.matchAll(/href="([^"]*\.xml)"/gi)];
+      const rawXmlHref = xmlMatches
+        .map((m) => m[1])
+        .find((href) => !href.includes("/xsl"));
+      if (rawXmlHref) {
+        // Resolve relative paths against the index page URL
+        const xmlUrl = rawXmlHref.startsWith("http")
+          ? rawXmlHref
+          : new URL(rawXmlHref, filingUrl).toString();
+        const parsed = await parseForm4(xmlUrl);
+        ticker = parsed.issuerTicker || null;
+        issuerName = parsed.issuerName || null;
+        transactions = parsed.transactions.map((t) => ({
+          transactionDate: t.transactionDate,
+          transactionType: t.transactionType,
+          officerName: t.officerName,
+          officerTitle: t.officerTitle,
+          shares: t.sharesTraded,
+          pricePerShare: t.pricePerShare,
+          totalValue: t.totalValue,
+          sharesOwnedAfter: t.sharesOwnedAfter,
+        }));
+      }
+    } catch {
+      // Non-fatal: continue with AI summary even if XML parsing fails.
+    }
   }
 
   // ── Call Claude ──
@@ -179,6 +249,10 @@ export async function GET(req: NextRequest) {
       summary: summaryText,
       impactRating,
       flags,
+      ticker,
+      issuerName,
+      filingType,
+      transactions,
       modelUsed: model,
       estimatedCost: Math.round(cost * 1_000_000) / 1_000_000, // 6dp
       cached: false,
@@ -194,6 +268,10 @@ export async function GET(req: NextRequest) {
             summary: result.summary,
             impact_rating: result.impactRating,
             flags: result.flags,
+            ticker: result.ticker,
+            issuer_name: result.issuerName,
+            filing_type: result.filingType,
+            transactions: result.transactions,
             model_used: result.modelUsed,
             estimated_cost: result.estimatedCost,
             created_at: new Date().toISOString(),
