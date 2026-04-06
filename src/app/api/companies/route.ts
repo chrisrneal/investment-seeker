@@ -145,32 +145,61 @@ export async function GET(req: NextRequest) {
     console.log(`[companies] found ${allSummaries.length} cached summaries for ${filingUrls.length} filing URLs`);
   }
 
+  // ── Pre-group relations and transactions for O(N+M) assembly ──
+
+  // Group relations by company_cik
+  const relationsByCompany = new Map<string, RelationRow[]>();
+  for (const rel of relations ?? []) {
+    const list = relationsByCompany.get(rel.company_cik) ?? [];
+    list.push(rel);
+    relationsByCompany.set(rel.company_cik, list);
+  }
+
+  // Group transactions by company_cik AND insider_cik
+  // company_cik -> insider_cik -> TxnRow[]
+  const txnsByCompanyAndInsider = new Map<string, Map<string, TxnRow[]>>();
+  // Also need transactions by company_cik for latestTxnDate
+  const txnsByCompany = new Map<string, TxnRow[]>();
+
+  for (const txn of txns ?? []) {
+    // By company
+    const cList = txnsByCompany.get(txn.company_cik) ?? [];
+    cList.push(txn);
+    txnsByCompany.set(txn.company_cik, cList);
+
+    // By company and insider
+    let companyMap = txnsByCompanyAndInsider.get(txn.company_cik);
+    if (!companyMap) {
+      companyMap = new Map<string, TxnRow[]>();
+      txnsByCompanyAndInsider.set(txn.company_cik, companyMap);
+    }
+    const iList = companyMap.get(txn.insider_cik) ?? [];
+    iList.push(txn);
+    companyMap.set(txn.insider_cik, iList);
+  }
+
   // Assemble: company → insiders (with their transactions)
   const result = companies.map((company) => {
-    const companyRelations = (relations ?? []).filter(
-      (r) => r.company_cik === company.cik,
-    );
-    const companyTxns = (txns ?? []).filter(
-      (t) => t.company_cik === company.cik,
-    );
+    const companyRelations = relationsByCompany.get(company.cik) ?? [];
+    const companyTxns = txnsByCompany.get(company.cik) ?? [];
+    const insiderTxnsMap = txnsByCompanyAndInsider.get(company.cik);
 
     const insidersWithTxns = companyRelations.map((rel) => {
-      const insiderTxns = companyTxns
-        .filter((t) => t.insider_cik === rel.insider_cik)
-        .map((t) => ({
-          id: t.id,
-          filingType: t.filing_type,
-          filingUrl: t.filing_url,
-          transactionDate: t.transaction_date,
-          transactionType: t.transaction_type,
-          transactionCode: t.transaction_code,
-          shares: t.shares,
-          pricePerShare: t.price_per_share,
-          totalValue: t.total_value,
-          sharesOwnedAfter: t.shares_owned_after,
-          isDirectOwnership: t.is_direct_ownership,
-          filedAt: t.filed_at,
-        }));
+      const insiderTxnsRaw = insiderTxnsMap?.get(rel.insider_cik) ?? [];
+      const insiderTxns = insiderTxnsRaw.map((t) => ({
+        id: t.id,
+        filingType: t.filing_type,
+        filingUrl: t.filing_url,
+        transactionDate: t.transaction_date,
+        transactionType: t.transaction_type,
+        transactionCode: t.transaction_code,
+        shares: t.shares,
+        pricePerShare: t.price_per_share,
+        totalValue: t.total_value,
+        sharesOwnedAfter: t.shares_owned_after,
+        isDirectOwnership: t.is_direct_ownership,
+        filedAt: t.filed_at,
+      }));
 
       return {
         cik: rel.insider_cik,
