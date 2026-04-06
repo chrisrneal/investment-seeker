@@ -41,6 +41,19 @@ export async function GET(req: NextRequest) {
     filed_at: string;
   };
 
+  type EightKRow = {
+    accession_no: string; company_cik: string; filer_name: string;
+    ticker: string | null; filing_date: string; items: string[];
+    primary_doc_url: string | null; text_excerpt: string;
+  };
+
+  type ThirteenFRow = {
+    id: number; accession_no: string; filer_cik: string;
+    filer_name: string; period_of_report: string; filing_date: string;
+    cusip: string; company_name: string; value_usd: number;
+    shares: number; investment_discretion: string | null; put_call: string | null;
+  };
+
   type DbResult<T> = { data: T[] | null; error: { message: string } | null };
 
   // Get companies ordered by latest activity
@@ -88,6 +101,33 @@ export async function GET(req: NextRequest) {
     .limit(1000) as DbResult<TxnRow>;
 
   if (txErr) return errorJson("Failed to query transactions", txErr.message, 500);
+
+  // Fetch 8-K events
+  const { data: eightKs, error: eightKErr } = await supabase
+    .from("events_8k")
+    .select("accession_no, company_cik, filer_name, ticker, filing_date, items, primary_doc_url, text_excerpt")
+    .in("company_cik", ciks)
+    .order("filing_date", { ascending: false })
+    .limit(500) as DbResult<EightKRow>;
+
+  if (eightKErr) return errorJson("Failed to query 8-K events", eightKErr.message, 500);
+
+  // Fetch 13F holdings
+  // We want to match holdings WHERE the company is the issuer being held.
+  // The 'company_name' in holdings_13f approximately matches the tracked company name.
+  // The most robust way is to query all recent holdings and filter them, or since Supabase
+  // doesn't support complex JOINs easily here without a cusip mapping, we can try to find holdings
+  // where the 'company_name' matches the issuer's name or ticker roughly.
+  // However, there is no direct link between companies.cik and holdings_13f in this schema except company_name.
+  // For simplicity since there's no cusip mapping table, we will fetch recent holdings
+  // and match them in memory by company name substring.
+  const { data: thirteenFs, error: thirteenFErr } = await supabase
+    .from("holdings_13f")
+    .select("id, accession_no, filer_cik, filer_name, period_of_report, filing_date, cusip, company_name, value_usd, shares, investment_discretion, put_call")
+    .order("filing_date", { ascending: false })
+    .limit(2000) as DbResult<ThirteenFRow>;
+
+  if (thirteenFErr) return errorJson("Failed to query 13F holdings", thirteenFErr.message, 500);
 
   // ── Fetch cached summaries for all filing URLs ──
   const filingUrls = [...new Set((txns ?? []).map((t) => t.filing_url))];
@@ -183,11 +223,36 @@ export async function GET(req: NextRequest) {
     companyMap.set(txn.insider_cik, iList);
   }
 
-  // Assemble: company → insiders (with their transactions)
+  // Group 8-K events by company_cik
+  const eightKsByCompany = new Map<string, EightKRow[]>();
+  for (const event of eightKs ?? []) {
+    const list = eightKsByCompany.get(event.company_cik) ?? [];
+    list.push(event);
+    eightKsByCompany.set(event.company_cik, list);
+  }
+
+  // Group 13F holdings by company matching
+  const thirteenFsByCompany = new Map<string, ThirteenFRow[]>();
+  for (const holding of thirteenFs ?? []) {
+    // Find matching companies based on holding.company_name
+    const holdingName = holding.company_name.toUpperCase();
+    for (const company of companies) {
+      if (holdingName.includes(company.name.toUpperCase().split(' ')[0]) ||
+          (company.ticker && holdingName.includes(company.ticker.toUpperCase()))) {
+        const list = thirteenFsByCompany.get(company.cik) ?? [];
+        list.push(holding);
+        thirteenFsByCompany.set(company.cik, list);
+      }
+    }
+  }
+
+  // Assemble: company → insiders (with their transactions) + 8k + 13f
   const result = companies.map((company) => {
     const companyRelations = relationsByCompany.get(company.cik) ?? [];
     const companyTxns = txnsByCompany.get(company.cik) ?? [];
     const insiderTxnsMap = txnsByCompanyAndInsider.get(company.cik);
+    const companyEightKs = eightKsByCompany.get(company.cik) ?? [];
+    const companyThirteenFs = thirteenFsByCompany.get(company.cik) ?? [];
 
     const insidersWithTxns = companyRelations.map((rel) => {
       const insiderTxnsRaw = insiderTxnsMap?.get(rel.insider_cik) ?? [];
@@ -231,6 +296,24 @@ export async function GET(req: NextRequest) {
       ticker: company.ticker,
       latestTransactionDate: latestTxnDate,
       insiders: insidersWithTxns,
+      eightKEvents: companyEightKs.map((e) => ({
+        accessionNo: e.accession_no,
+        filingDate: e.filing_date,
+        items: e.items,
+        primaryDocUrl: e.primary_doc_url,
+        textExcerpt: e.text_excerpt,
+      })),
+      thirteenFHoldings: companyThirteenFs.map((h) => ({
+        id: h.id,
+        accessionNo: h.accession_no,
+        periodOfReport: h.period_of_report,
+        filingDate: h.filing_date,
+        cusip: h.cusip,
+        companyName: h.company_name,
+        valueUsd: h.value_usd,
+        shares: h.shares,
+        putCall: h.put_call,
+      })),
     };
   });
 
