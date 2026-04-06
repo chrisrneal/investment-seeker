@@ -30,12 +30,34 @@ type Insider = {
   transactions: Transaction[];
 };
 
+type EightKEvent = {
+  accessionNo: string;
+  filingDate: string;
+  items: string[];
+  primaryDocUrl: string | null;
+  textExcerpt: string;
+};
+
+type ThirteenFHolding = {
+  id: number;
+  accessionNo: string;
+  periodOfReport: string;
+  filingDate: string;
+  cusip: string;
+  companyName: string;
+  valueUsd: number;
+  shares: number;
+  putCall: string | null;
+};
+
 type Company = {
   cik: string;
   name: string;
   ticker: string | null;
   latestTransactionDate: string | null;
   insiders: Insider[];
+  eightKEvents?: EightKEvent[];
+  thirteenFHoldings?: ThirteenFHolding[];
 };
 
 type JobStep = {
@@ -616,6 +638,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Active tab per company: "insiders" | "8k" | "13f"
+  const [activeTab, setActiveTab] = useState<Map<string, string>>(new Map());
 
   // ── Auth state ─────────────────────────────────────────────────
   const supabaseRef = useRef(getSupabaseBrowserClient());
@@ -817,7 +841,25 @@ export default function Home() {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(cik)) next.delete(cik);
-      else next.add(cik);
+      else {
+        next.add(cik);
+        setActiveTab((prevTabs) => {
+          if (!prevTabs.has(cik)) {
+            const nextTabs = new Map(prevTabs);
+            nextTabs.set(cik, "insiders");
+            return nextTabs;
+          }
+          return prevTabs;
+        });
+      }
+      return next;
+    });
+  }
+
+  function setCompanyTab(cik: string, tab: string) {
+    setActiveTab((prev) => {
+      const next = new Map(prev);
+      next.set(cik, tab);
       return next;
     });
   }
@@ -1089,6 +1131,9 @@ export default function Home() {
             0,
           );
           const isBatchRunning = companySummarizing.has(company.cik);
+          const currentTab = activeTab.get(company.cik) ?? "insiders";
+          const eightKEventsCount = company.eightKEvents?.length ?? 0;
+          const thirteenFHoldingsCount = company.thirteenFHoldings?.length ?? 0;
 
           // Collect unique loaded summaries for this company (for the overview block)
           const companySummaryEntries = (() => {
@@ -1140,6 +1185,16 @@ export default function Home() {
                   <span style={badge("#1e2832")}>
                     {txnCount} txn{txnCount !== 1 ? "s" : ""}
                   </span>
+                  {eightKEventsCount > 0 && (
+                    <span style={badge("#1e2832")}>
+                      {eightKEventsCount} 8-K
+                    </span>
+                  )}
+                  {thirteenFHoldingsCount > 0 && (
+                    <span style={badge("#1e2832")}>
+                      {thirteenFHoldingsCount} 13F
+                    </span>
+                  )}
                   <span style={{ color: "#7a8a9a", fontSize: 18 }}>
                     {isOpen ? "▾" : "▸"}
                   </span>
@@ -1148,7 +1203,50 @@ export default function Home() {
 
               {/* Expanded content */}
               {isOpen && (
-                <div style={{ marginTop: 8 }}>
+                <div style={{ marginTop: 16 }}>
+                  {/* ── Tabs ── */}
+                  <div style={{ display: "flex", gap: 16, borderBottom: "1px solid #1e2832", marginBottom: 12 }}>
+                    <button
+                      onClick={() => setCompanyTab(company.cik, "insiders")}
+                      style={{
+                        background: "none", border: "none", padding: "8px 0", cursor: "pointer",
+                        fontSize: 14, fontWeight: 600,
+                        color: currentTab === "insiders" ? "#e6e8eb" : "#7a8a9a",
+                        borderBottom: currentTab === "insiders" ? "2px solid #7cc4ff" : "2px solid transparent",
+                      }}
+                    >
+                      Insider Transactions
+                    </button>
+                    {(eightKEventsCount > 0) && (
+                      <button
+                        onClick={() => setCompanyTab(company.cik, "8k")}
+                        style={{
+                          background: "none", border: "none", padding: "8px 0", cursor: "pointer",
+                          fontSize: 14, fontWeight: 600,
+                          color: currentTab === "8k" ? "#e6e8eb" : "#7a8a9a",
+                          borderBottom: currentTab === "8k" ? "2px solid #7cc4ff" : "2px solid transparent",
+                        }}
+                      >
+                        8-K Events ({eightKEventsCount})
+                      </button>
+                    )}
+                    {(thirteenFHoldingsCount > 0) && (
+                      <button
+                        onClick={() => setCompanyTab(company.cik, "13f")}
+                        style={{
+                          background: "none", border: "none", padding: "8px 0", cursor: "pointer",
+                          fontSize: 14, fontWeight: 600,
+                          color: currentTab === "13f" ? "#e6e8eb" : "#7a8a9a",
+                          borderBottom: currentTab === "13f" ? "2px solid #7cc4ff" : "2px solid transparent",
+                        }}
+                      >
+                        13F Holdings ({thirteenFHoldingsCount})
+                      </button>
+                    )}
+                  </div>
+
+                  {currentTab === "insiders" && (
+                  <>
                   {/* ── Summarize All button ── */}
                   <div
                     style={{
@@ -1524,6 +1622,102 @@ export default function Home() {
                       )}
                     </div>
                   ))}
+                  </>
+                  )}
+
+                  {currentTab === "8k" && company.eightKEvents && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid #2a3a4a", color: "#8ca2b8", textAlign: "left" }}>
+                            <th style={{ padding: "8px" }}>Date</th>
+                            <th style={{ padding: "8px" }}>Items</th>
+                            <th style={{ padding: "8px" }}>Excerpt</th>
+                            <th style={{ padding: "8px" }}></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {company.eightKEvents.map((e) => (
+                            <tr key={e.accessionNo} style={{ borderBottom: "1px solid #1a2530" }}>
+                              <td style={{ padding: "8px", whiteSpace: "nowrap", color: "#c8d4e0", verticalAlign: "top" }}>
+                                {e.filingDate}
+                              </td>
+                              <td style={{ padding: "8px", verticalAlign: "top" }}>
+                                {e.items.map((item, idx) => (
+                                  <span key={idx} style={{ ...badge("#1e2832"), marginRight: 4, marginBottom: 4 }}>
+                                    {item}
+                                  </span>
+                                ))}
+                              </td>
+                              <td style={{ padding: "8px", color: "#9aa4ad", lineHeight: 1.5, maxWidth: 400 }}>
+                                {e.textExcerpt.length > 200 ? e.textExcerpt.slice(0, 200) + "…" : e.textExcerpt}
+                              </td>
+                              <td style={{ padding: "8px", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                                {e.primaryDocUrl && (
+                                  <a
+                                    href={e.primaryDocUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ color: "#7cc4ff", fontSize: 12 }}
+                                  >
+                                    SEC↗
+                                  </a>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {currentTab === "13f" && company.thirteenFHoldings && (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid #2a3a4a", color: "#8ca2b8", textAlign: "left" }}>
+                            <th style={{ padding: "8px" }}>Period</th>
+                            <th style={{ padding: "8px" }}>Company</th>
+                            <th style={{ padding: "8px" }}>CUSIP</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Shares</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Value (USD)</th>
+                            <th style={{ padding: "8px", textAlign: "center" }}>Type</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {company.thirteenFHoldings.map((h) => (
+                            <tr key={h.id} style={{ borderBottom: "1px solid #1a2530" }}>
+                              <td style={{ padding: "8px", whiteSpace: "nowrap", color: "#9aa4ad" }}>
+                                {h.periodOfReport}
+                              </td>
+                              <td style={{ padding: "8px", color: "#c8d4e0" }}>
+                                {h.companyName}
+                              </td>
+                              <td style={{ padding: "8px", color: "#7a8a9a", fontSize: 12 }}>
+                                {h.cusip}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#c8d4e0" }}>
+                                {Number(h.shares).toLocaleString()}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#c8d4e0" }}>
+                                ${Number(h.valueUsd * 1000).toLocaleString()}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                {h.putCall ? (
+                                  <span style={badge(h.putCall.toLowerCase() === "put" ? "#5a1a1a" : "#1a5a3a")}>
+                                    {h.putCall}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "#4a5a6a" }}>—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>
