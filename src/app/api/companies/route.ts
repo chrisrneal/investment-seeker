@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabase";
+import { getAuthUser, unauthorizedResponse } from "@/lib/auth";
 import type { ApiError } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -16,6 +17,10 @@ function errorJson(error: string, detail: string | undefined, status: number) {
  * Each company includes its insiders and their recent transactions.
  */
 export async function GET(req: NextRequest) {
+  // ── Auth gate ──
+  const user = await getAuthUser(req);
+  if (!user) return unauthorizedResponse();
+
   const { searchParams } = new URL(req.url);
   const limit = Math.min(
     Math.max(parseInt(searchParams.get("limit") ?? "50", 10) || 50, 1),
