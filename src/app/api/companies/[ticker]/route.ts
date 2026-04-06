@@ -13,8 +13,9 @@ function errorJson(error: string, detail: string | undefined, status: number) {
 /**
  * GET /api/companies/[ticker]
  *
- * Returns a single company by ticker symbol with its insiders,
- * transactions, 8-K events, 13F holdings, and cached AI summaries.
+ * **Requires authentication.** Returns a single company by ticker symbol
+ * with its insiders, transactions, 8-K events, 13F holdings, and cached
+ * AI summaries. Returns 404 if the ticker is not found.
  */
 export async function GET(
   req: NextRequest,

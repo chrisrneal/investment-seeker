@@ -631,7 +631,7 @@ function ProgressBar({ job }: { job: IngestJob }) {
 
 export default function Home() {
   return (
-    <Suspense>
+    <Suspense fallback={<div style={{ maxWidth: 920, margin: "0 auto", padding: "40px 20px" }}>Loading…</div>}>
       <HomeContent />
     </Suspense>
   );

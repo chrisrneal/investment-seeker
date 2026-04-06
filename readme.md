@@ -117,6 +117,14 @@ GET /api/companies?limit=50
 
 - `limit` (optional) — 1–200, default 50.
 
+### GET /api/companies/[ticker]
+
+**Requires authentication.** Returns a single company by ticker symbol with its insiders, transactions, 8-K events, 13F holdings, and cached AI summaries. Returns `404` if the ticker is not found.
+
+```
+GET /api/companies/AAPL
+```
+
 ### GET /api/summarize
 
 **Requires authentication.** AI-powered filing summarizer using the Anthropic API with a two-tier model strategy. Returns `401` if the request has no valid Supabase session.
