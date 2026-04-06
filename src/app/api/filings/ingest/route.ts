@@ -22,6 +22,7 @@ export const dynamic = "force-dynamic";
 
 const OWNERSHIP_FORM_TYPES = ["3", "4", "5"] as const;
 const MAX_HOURS = 168; // 7 days
+const MAX_HOURS_TICKER = 720; // 30 days when searching by ticker
 
 async function parseOwnershipFiling(filing: FilingResult) {
   const res = await secFetch(filing.link);
@@ -56,7 +57,7 @@ async function parseOwnershipFiling(filing: FilingResult) {
  *  7  Parse 13F-HR filings
  *  8  Save to database
  */
-async function runIngest(jobId: string, hours: number) {
+async function runIngest(jobId: string, hours: number, ticker?: string) {
   const supabase = getSupabaseClient();
   const now = new Date();
   const cutoffDate = new Date(now.getTime() - hours * 60 * 60 * 1000);
@@ -81,6 +82,7 @@ async function runIngest(jobId: string, hours: number) {
     try {
       const results = await searchAllFilings({
         formType,
+        ticker,
         startDate,
         endDate,
         maxResults: 2000,
@@ -107,6 +109,7 @@ async function runIngest(jobId: string, hours: number) {
   try {
     eightKResults = await searchAllFilings({
       formType: "8-K",
+      ticker,
       startDate,
       endDate,
       maxResults: 2000,
@@ -131,6 +134,7 @@ async function runIngest(jobId: string, hours: number) {
   try {
     thirteenFResults = await searchAllFilings({
       formType: "13F-HR",
+      ticker,
       startDate: startDate13f,
       endDate,
       maxResults: 2000,
@@ -473,6 +477,7 @@ async function runIngest(jobId: string, hours: number) {
   updateProgress(jobId, ++dbStep, dbTotal, "Done");
 
   completeJob(jobId, {
+    ticker: ticker ?? null,
     ownershipParsed,
     ownershipFailed,
     companies: companiesMap.size,
@@ -482,6 +487,8 @@ async function runIngest(jobId: string, hours: number) {
     eightKFailed,
     thirteenFHoldings: deduped13F.length,
     thirteenFFailed,
+    totalFilingsFetched:
+      ownershipResults.length + eightKResults.length + thirteenFResults.length,
   });
 }
 
@@ -523,18 +530,22 @@ export async function POST(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
+  const ticker = searchParams.get("ticker")?.trim().toUpperCase() || undefined;
+  const maxHours = ticker ? MAX_HOURS_TICKER : MAX_HOURS;
+  const defaultHours = ticker ? 720 : 24;
   const hours = Math.min(
-    Math.max(parseInt(searchParams.get("hours") ?? "24", 10) || 24, 1),
-    MAX_HOURS,
+    Math.max(parseInt(searchParams.get("hours") ?? String(defaultHours), 10) || defaultHours, 1),
+    maxHours,
   );
 
   const jobId = crypto.randomUUID();
+  const tickerLabel = ticker ? ` for ${ticker}` : "";
   createJob(jobId, [
-    "Fetching Form 3 filings",
-    "Fetching Form 4 filings",
-    "Fetching Form 5 filings",
-    "Fetching 8-K filings",
-    "Fetching 13F-HR filings",
+    `Fetching Form 3 filings${tickerLabel}`,
+    `Fetching Form 4 filings${tickerLabel}`,
+    `Fetching Form 5 filings${tickerLabel}`,
+    `Fetching 8-K filings${tickerLabel}`,
+    `Fetching 13F-HR filings${tickerLabel}`,
     "Parsing ownership XML",
     "Parsing 8-K filings",
     "Parsing 13F-HR filings",
@@ -542,7 +553,7 @@ export async function POST(req: NextRequest) {
   ]);
 
   // Fire and forget — work continues after response is sent
-  runIngest(jobId, hours).catch((err) => {
+  runIngest(jobId, hours, ticker).catch((err) => {
     failJob(jobId, err instanceof Error ? err.message : "Unexpected error");
   });
 
