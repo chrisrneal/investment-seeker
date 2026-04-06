@@ -21,7 +21,7 @@ After each development task, review and update as needed:
 
 ## Project Structure
 
-- `src/app/page.tsx` — Company-centric insider tracking UI (client component). Shows companies sorted by most recent insider transactions. Expandable company cards reveal insiders and their transaction history. Includes a ticker search bar to load filings for a specific company (last 30 days), plus broad ingest controls. Includes full AI summary integration: per-row `▾ AI` / `🔬` buttons, inline expandable summary panels, company-level "Summarize All" batch action, and a company overview block aggregating loaded summaries.
+- `src/app/page.tsx` — Company-centric insider tracking UI (client component). Shows companies sorted by most recent insider transactions, paginated at 20 per page with prev/next navigation. Expandable company cards reveal insiders and their transaction history. Includes a ticker search bar to load filings for a specific company (last 30 days), plus broad ingest controls. Includes full AI summary integration: per-row `▾ AI` / `🔬` buttons, inline expandable summary panels, company-level "Summarize All" batch action, and a company overview block aggregating loaded summaries.
 - `src/app/layout.tsx` — root layout.
 - `src/app/api/filings/route.ts` — `GET /api/filings` endpoint (App Router route handler). Direct EDGAR search.
 - `src/app/api/filings/ingest/route.ts` — `POST /api/filings/ingest` endpoint. Starts a background ingestion job (returns `jobId` immediately). `GET /api/filings/ingest?jobId=xxx` polls for progress. Fetches recent Forms 3, 4, 5, 8-K, and 13F-HR from EDGAR, parses each type's XML/HTML, and upserts into normalized tables: `companies`, `insiders`, `company_insiders`, `transactions`, `events_8k`, `holdings_13f`. Work continues server-side even if the client disconnects. Supports optional `ticker` query param to scope the search to a single company (defaults to 30-day window).
@@ -134,3 +134,8 @@ After each development task, review and update as needed:
   `useSearchParams()` to read the `?error=` query param. Next.js requires
   this to be wrapped in a `<Suspense>` boundary. The exported `Home`
   component wraps `HomeContent` in Suspense.
+- **Client-side pagination:** The companies list on the home page is
+  paginated at 20 items per page. All companies are fetched in a single
+  API call (up to 100) and sliced client-side. Pagination controls appear
+  at both the top and bottom of the list. Page resets to 1 on data reload.
+  Bottom pagination buttons auto-scroll to the top of the page.
