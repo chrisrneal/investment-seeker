@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchAllFilings, type FilingResult } from "@/lib/sec";
+import { searchAllFilings } from "@/lib/sec";
 import { parse13F } from "@/lib/parse13F";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { ApiError } from "@/lib/types";
@@ -34,21 +34,20 @@ export async function POST(req: NextRequest) {
   const startDate = cutoff.toISOString().slice(0, 10);
   const endDate = now.toISOString().slice(0, 10);
 
-  let filings: FilingResult[];
-  try {
-    filings = await searchAllFilings({
-      formType: "13F-HR",
-      startDate,
-      endDate,
-      maxResults: 2000,
-    });
-  } catch (err) {
-    return errorJson(
+  const filings = await searchAllFilings({
+    formType: "13F-HR",
+    startDate,
+    endDate,
+    maxResults: 2000,
+  }).catch((err) =>
+    errorJson(
       "EDGAR fetch failed for 13F-HR",
       err instanceof Error ? err.message : "Unknown error",
       502,
-    );
-  }
+    ),
+  );
+
+  if (filings instanceof NextResponse) return filings;
 
   if (filings.length === 0) {
     return NextResponse.json({
