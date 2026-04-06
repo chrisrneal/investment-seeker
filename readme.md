@@ -119,14 +119,15 @@ GET /api/companies?limit=50
 
 ### GET /api/summarize
 
-AI-powered filing summarizer using the Anthropic API with a two-tier model strategy.
+**Requires authentication.** AI-powered filing summarizer using the Anthropic API with a two-tier model strategy. Returns `401` if the request has no valid Supabase session.
 
 ```
-GET /api/summarize?url=<SEC_FILING_URL>&deep_analysis=<true|false>
+GET /api/summarize?url=<SEC_FILING_URL>&deep_analysis=<true|false>&filing_type=<3|4|5|8-K|13F>
 ```
 
 - `url` (required) — URL to an SEC filing on sec.gov.
 - `deep_analysis` (optional) — `true` to use Claude Sonnet for deeper analysis (mergers, restatements). Defaults to Haiku.
+- `filing_type` (optional) — hints the model about the form type.
 
 #### Response
 
@@ -135,6 +136,10 @@ GET /api/summarize?url=<SEC_FILING_URL>&deep_analysis=<true|false>
   "summary": "...",
   "impactRating": "Positive",
   "flags": ["Notable insider buying activity"],
+  "ticker": "AAPL",
+  "issuerName": "Apple Inc",
+  "filingType": "4",
+  "transactions": [],
   "modelUsed": "claude-haiku-4-5-20251001",
   "estimatedCost": 0.000342,
   "cached": false
@@ -142,6 +147,28 @@ GET /api/summarize?url=<SEC_FILING_URL>&deep_analysis=<true|false>
 ```
 
 Summaries are cached in Supabase. Subsequent requests for the same filing URL return `"cached": true`.
+
+## Authentication
+
+AI features (summarization) are gated behind Supabase Auth. Users must sign in via email/password from the top-right of the page. The auth flow:
+
+1. **Client-side** — `@supabase/ssr` browser client manages sessions via cookies. Sign-in/sign-up forms are inline in the page header.
+2. **Server-side** — `/api/summarize` verifies the session cookie using `getAuthUser()` from `src/lib/auth.ts`. Unauthenticated requests get a `401`.
+3. **OAuth callback** — `/auth/callback` handles the code exchange for email confirmation links.
+4. **UI gating** — AI buttons (▾ AI, 🔬, ✦ Summarize All) are disabled and dimmed when not signed in.
+
+To enable auth, you need `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in your environment. In the Supabase dashboard, enable Email auth under Authentication → Providers.
+
+## Frontend AI Summary Integration
+
+The company-centric UI (`src/app/page.tsx`) exposes the summarize API inline:
+
+- **Per-row buttons** — each transaction row has a `▾ AI` button (standard Haiku summary) and a `🔬` button (deep Sonnet analysis). Clicking opens an expandable panel below the row.
+- **Deduplication** — multiple rows sharing the same accession number reuse the same cached result; only one fetch fires per unique URL.
+- **Summary panel** — shows impact badge (color-coded: Positive=green, Negative=red, Mixed=yellow, Neutral=gray), summary text, flag list, parsed transactions sub-table, and a footer with model name, estimated cost, and `⚡ cached` indicator.
+- **Deep analysis toggle** — the `🔬` button (or the "🔬 Deep Analysis" button inside an open panel) re-fetches with `deep_analysis=true` to use Claude Sonnet.
+- **Summarize All** — each expanded company card shows a "✦ Summarize All" button that batch-fetches the most recent filing per insider (concurrency=3). Results aggregate into a company-level overview block at the top of the expanded section.
+- **Persistent state** — summaries survive expand/collapse cycles, stored in a `Map<string, FilingSummary>` for the session.
 
 ## Libraries
 
@@ -202,8 +229,9 @@ npm run dev
 |---|---|---|
 | `SEC_USER_AGENT_EMAIL` | Yes | Contact email for SEC User-Agent header |
 | `ANTHROPIC_API_KEY` | For /api/summarize | Anthropic API key |
-| `SUPABASE_URL` | Yes | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
+| `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL (used by both client and server) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anon/public key (client-side auth) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (server-side only) |
 | `DATABASE_URL` | For migrations | Postgres connection string (Supabase Dashboard → Settings → Database) |
 
 ### Database migrations
@@ -323,11 +351,13 @@ src/
     page.tsx                 # company-centric insider tracking UI
   lib/
     anthropic.ts             # shared Anthropic client
+    auth.ts                  # server-side auth verification helper
     costs.ts                 # token cost estimator
     parseForm4.ts            # ownership XML parser (Forms 3/4/5)
     scoreSignal.ts           # insider transaction scoring engine
     sec.ts                   # rate-limited EDGAR fetch + search
-    supabase.ts              # shared Supabase client
+    supabase.ts              # shared Supabase client (service role)
+    supabase-browser.ts      # browser Supabase client (anon key)
     types.ts                 # shared TypeScript type definitions
 scripts/
   migrate.ts                 # database migration runner

@@ -112,3 +112,26 @@ export function failJob(id: string, error: string) {
   job.error = error;
   job.updatedAt = Date.now();
 }
+
+// ── Cancellation support ──────────────────────────────────────────
+
+const cancelled = new Set<string>();
+
+/** Mark a running job for cancellation. */
+export function cancelJob(id: string): boolean {
+  const job = jobs.get(id);
+  if (!job || job.status !== "running") return false;
+  cancelled.add(id);
+  return true;
+}
+
+/** Check if a job has been cancelled. Call this in hot loops. */
+export function isCancelled(id: string): boolean {
+  return cancelled.has(id);
+}
+
+/** Mark the job as failed-due-to-cancellation and clean up the flag. */
+export function applyCancellation(id: string) {
+  cancelled.delete(id);
+  failJob(id, "Cancelled by user");
+}

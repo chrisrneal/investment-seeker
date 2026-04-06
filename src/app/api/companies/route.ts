@@ -84,6 +84,67 @@ export async function GET(req: NextRequest) {
 
   if (txErr) return errorJson("Failed to query transactions", txErr.message, 500);
 
+  // ── Fetch cached summaries for all filing URLs ──
+  const filingUrls = [...new Set((txns ?? []).map((t) => t.filing_url))];
+
+  type SummaryRow = {
+    filing_url: string; deep_analysis: boolean; summary: string;
+    impact_rating: string; flags: string[]; ticker: string | null;
+    issuer_name: string | null; filing_type: string | null;
+    transactions: unknown[]; model_used: string; estimated_cost: number;
+  };
+  type LegacySummaryRow = {
+    filing_url: string; deep_analysis: boolean; summary: string;
+    impact_rating: string; flags: string[]; model_used: string; estimated_cost: number;
+  };
+  type SummaryResult = { data: SummaryRow[] | null; error: { message: string } | null };
+  type LegacySummaryResult = { data: LegacySummaryRow[] | null; error: { message: string } | null };
+
+  let summaryMap: Record<string, SummaryRow> = {};
+
+  if (filingUrls.length > 0) {
+    // Supabase .in() has a limit — batch into chunks of 200
+    const CHUNK = 200;
+    const allSummaries: SummaryRow[] = [];
+    for (let i = 0; i < filingUrls.length; i += CHUNK) {
+      const chunk = filingUrls.slice(i, i + CHUNK);
+      const { data: sumRows, error: sumErr } = await supabase
+        .from("filing_summaries")
+        .select(
+          "filing_url, deep_analysis, summary, impact_rating, flags, ticker, " +
+          "issuer_name, filing_type, transactions, model_used, estimated_cost",
+        )
+        .in("filing_url", chunk)
+        .eq("deep_analysis", false) as SummaryResult;
+      if (!sumErr && sumRows) {
+        allSummaries.push(...sumRows);
+      } else if (sumErr) {
+        console.warn("[companies] summary query failed:", sumErr.message);
+        // Fallback: query without newer columns that may not exist yet
+        const { data: legacyRows, error: legacyErr } = await supabase
+          .from("filing_summaries")
+          .select(
+            "filing_url, deep_analysis, summary, impact_rating, flags, model_used, estimated_cost",
+          )
+          .in("filing_url", chunk)
+          .eq("deep_analysis", false) as LegacySummaryResult;
+        if (!legacyErr && legacyRows) {
+          allSummaries.push(...legacyRows.map((r) => ({
+            ...r,
+            ticker: null,
+            issuer_name: null,
+            filing_type: null,
+            transactions: [] as unknown[],
+          })));
+        }
+      }
+    }
+    for (const s of allSummaries) {
+      summaryMap[s.filing_url] = s;
+    }
+    console.log(`[companies] found ${allSummaries.length} cached summaries for ${filingUrls.length} filing URLs`);
+  }
+
   // Assemble: company → insiders (with their transactions)
   const result = companies.map((company) => {
     const companyRelations = (relations ?? []).filter(
@@ -146,5 +207,26 @@ export async function GET(req: NextRequest) {
     return bDate.localeCompare(aDate);
   });
 
-  return NextResponse.json({ count: result.length, companies: result });
+  // Build summaries dict keyed by filing URL (camelCase for frontend)
+  const summaries: Record<string, {
+    summary: string; impactRating: string; flags: string[];
+    ticker: string | null; issuerName: string | null; filingType: string | null;
+    transactions: unknown[]; modelUsed: string; estimatedCost: number; cached: boolean;
+  }> = {};
+  for (const [url, s] of Object.entries(summaryMap)) {
+    summaries[url] = {
+      summary: s.summary,
+      impactRating: s.impact_rating,
+      flags: s.flags ?? [],
+      ticker: s.ticker,
+      issuerName: s.issuer_name,
+      filingType: s.filing_type,
+      transactions: s.transactions ?? [],
+      modelUsed: s.model_used,
+      estimatedCost: s.estimated_cost,
+      cached: true,
+    };
+  }
+
+  return NextResponse.json({ count: result.length, companies: result, summaries });
 }

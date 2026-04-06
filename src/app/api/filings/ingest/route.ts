@@ -12,6 +12,9 @@ import {
   updateProgress,
   completeJob,
   failJob,
+  cancelJob,
+  isCancelled,
+  applyCancellation,
 } from "@/lib/ingestJobs";
 
 export const runtime = "nodejs";
@@ -73,6 +76,7 @@ async function runIngest(jobId: string, hours: number) {
 
   // Steps 0–2: Fetch ownership form types
   for (const formType of OWNERSHIP_FORM_TYPES) {
+    if (isCancelled(jobId)) { applyCancellation(jobId); return; }
     advanceStep(jobId);
     try {
       const results = await searchAllFilings({
@@ -98,6 +102,7 @@ async function runIngest(jobId: string, hours: number) {
   }
 
   // Step 3: Fetch 8-K filings
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
   advanceStep(jobId);
   try {
     eightKResults = await searchAllFilings({
@@ -121,6 +126,7 @@ async function runIngest(jobId: string, hours: number) {
   }
 
   // Step 4: Fetch 13F-HR filings
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
   advanceStep(jobId);
   try {
     thirteenFResults = await searchAllFilings({
@@ -182,6 +188,7 @@ async function runIngest(jobId: string, hours: number) {
   let ownershipFailed = 0;
 
   for (let i = 0; i < ownershipResults.length; i++) {
+    if (isCancelled(jobId)) { applyCancellation(jobId); return; }
     const f = ownershipResults[i];
     let parsed;
     try {
@@ -268,6 +275,7 @@ async function runIngest(jobId: string, hours: number) {
   let eightKFailed = 0;
 
   for (let i = 0; i < eightKResults.length; i++) {
+    if (isCancelled(jobId)) { applyCancellation(jobId); return; }
     const f = eightKResults[i];
     try {
       const parsed = await parse8K(f.link, {
@@ -315,6 +323,7 @@ async function runIngest(jobId: string, hours: number) {
   let thirteenFFailed = 0;
 
   for (let i = 0; i < thirteenFResults.length; i++) {
+    if (isCancelled(jobId)) { applyCancellation(jobId); return; }
     const f = thirteenFResults[i];
     let parsed;
     try {
@@ -348,7 +357,7 @@ async function runIngest(jobId: string, hours: number) {
         value_usd: h.valueUsd,
         shares: h.shares,
         investment_discretion: h.investmentDiscretion,
-        put_call: h.putCall,
+        put_call: h.putCall ?? "",
       });
     }
 
@@ -357,6 +366,7 @@ async function runIngest(jobId: string, hours: number) {
 
   // ── Save to database (Step 8) ────────────────────────────────
 
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
   advanceStep(jobId, "Upserting companies");
   const BATCH = 500;
   let dbStep = 0;
@@ -368,7 +378,7 @@ async function runIngest(jobId: string, hours: number) {
   ];
   const deduped13F = [
     ...new Map(
-      holdingRows.map((r) => [`${r.accession_no}|${r.cusip}|${r.put_call}`, r]),
+      holdingRows.map((r) => [`${r.accession_no}|${r.cusip}|${r.put_call ?? ""}`, r]),
     ).values(),
   ];
   const dedupedTxn = [
@@ -452,6 +462,7 @@ async function runIngest(jobId: string, hours: number) {
         .from("holdings_13f")
         .upsert(deduped13F.slice(i, i + BATCH), {
           onConflict: "accession_no,cusip,put_call",
+          ignoreDuplicates: false,
         });
       if (error) {
         failJob(jobId, `Failed to upsert holdings_13f: ${error.message}`);
@@ -536,4 +547,21 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ jobId });
+}
+
+/**
+ * DELETE /api/filings/ingest
+ *
+ * Cancel the currently running ingestion job.
+ */
+export async function DELETE() {
+  const running = findRunningJob();
+  if (!running) {
+    return NextResponse.json({ error: "No running job to cancel" }, { status: 404 });
+  }
+  const ok = cancelJob(running.id);
+  if (!ok) {
+    return NextResponse.json({ error: "Job already finished" }, { status: 409 });
+  }
+  return NextResponse.json({ cancelled: true, jobId: running.id });
 }

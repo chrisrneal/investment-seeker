@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
         value_usd: h.valueUsd,
         shares: h.shares,
         investment_discretion: h.investmentDiscretion,
-        put_call: h.putCall,
+        put_call: h.putCall ?? "",
       });
     }
   }

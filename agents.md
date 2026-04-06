@@ -21,14 +21,17 @@ After each development task, review and update as needed:
 
 ## Project Structure
 
-- `src/app/page.tsx` — Company-centric insider tracking UI (client component). Shows companies sorted by most recent insider transactions. Expandable company cards reveal insiders and their transaction history.
+- `src/app/page.tsx` — Company-centric insider tracking UI (client component). Shows companies sorted by most recent insider transactions. Expandable company cards reveal insiders and their transaction history. Includes full AI summary integration: per-row `▾ AI` / `🔬` buttons, inline expandable summary panels, company-level "Summarize All" batch action, and a company overview block aggregating loaded summaries.
 - `src/app/layout.tsx` — root layout.
 - `src/app/api/filings/route.ts` — `GET /api/filings` endpoint (App Router route handler). Direct EDGAR search.
 - `src/app/api/filings/ingest/route.ts` — `POST /api/filings/ingest` endpoint. Starts a background ingestion job (returns `jobId` immediately). `GET /api/filings/ingest?jobId=xxx` polls for progress. Fetches recent Forms 3, 4, 5, 8-K, and 13F-HR from EDGAR, parses each type's XML/HTML, and upserts into normalized tables: `companies`, `insiders`, `company_insiders`, `transactions`, `events_8k`, `holdings_13f`. Work continues server-side even if the client disconnects.
 - `src/app/api/filings/ingest/8k/route.ts` — Standalone `POST /api/filings/ingest/8k` endpoint (also called by the unified ingest pipeline).
 - `src/app/api/filings/ingest/13f/route.ts` — Standalone `POST /api/filings/ingest/13f` endpoint (also called by the unified ingest pipeline).
-- `src/app/api/companies/route.ts` — `GET /api/companies` endpoint. Returns companies ordered by most recent transaction, with nested insiders and their transaction history.
-- `src/app/api/summarize/route.ts` — `GET /api/summarize` endpoint. AI filing summarizer with two-tier model strategy (Haiku default, Sonnet for deep analysis). Caches results in Supabase.
+- `src/app/api/companies/route.ts` — `GET /api/companies` endpoint. Returns companies ordered by most recent transaction, with nested insiders and their transaction history. Also joins `filing_summaries` to include any cached AI summaries keyed by filing URL in the response.
+- `src/app/api/summarize/route.ts` — `GET /api/summarize` endpoint. **Requires authentication.** AI filing summarizer with two-tier model strategy (Haiku default, Sonnet for deep analysis). Verifies Supabase session via `getAuthUser()` before proceeding. Caches results in Supabase.
+- `src/app/auth/callback/route.ts` — OAuth/email confirmation callback. Exchanges the `code` query param for a Supabase session and sets cookies.
+- `src/lib/auth.ts` — Server-side auth helper. `getAuthUser(req)` verifies the Supabase session cookie and returns the `User` or `null`. `unauthorizedResponse()` returns a standard 401 JSON.
+- `src/lib/supabase-browser.ts` — Browser-side Supabase client using `@supabase/ssr`. Uses `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 - `src/lib/sec.ts` — SEC EDGAR client: token-bucket rate limiter (10 rps),
   `User-Agent` header, and `searchFilings()` against
   `https://efts.sec.gov/LATEST/search-index`.
@@ -60,7 +63,8 @@ After each development task, review and update as needed:
   `searchFilings()` so "recent" filings always come first.
 - **Deployment:** Vercel, preferred via GitHub integration (push-to-deploy).
   Set all env vars (`SEC_USER_AGENT_EMAIL`, `ANTHROPIC_API_KEY`,
-  `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`) in Vercel project env vars
+  `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `SUPABASE_SERVICE_ROLE_KEY`) in Vercel project env vars
   before going live.
 - **Database migrations:** Managed via `scripts/migrate.ts` and SQL files in
   `migrations/`. Run `npm run migrate` to apply pending migrations.
@@ -79,6 +83,22 @@ After each development task, review and update as needed:
   summary before calling Claude. New summaries are stored after generation.
   Table schema is documented in `readme.md`. The route degrades gracefully
   if Supabase is unavailable (skips cache, still returns fresh summary).
+- **Summary preloading:** `/api/companies` joins `filing_summaries` on
+  filing URLs and returns a `summaries` dict (keyed by filing URL) alongside
+  company data. The frontend pre-populates its summary Map on load so
+  previously-summarized filings display instantly without re-calling Claude.
+  Buttons show `✦ AI` instead of `▾ AI` when a cached summary is available.
+- **Authentication:** AI features (summarization) are gated behind Supabase
+  Auth. The browser client (`src/lib/supabase-browser.ts`) manages sessions
+  via `@supabase/ssr`. API routes verify session cookies using
+  `getAuthUser()` from `src/lib/auth.ts`. The `/auth/callback` route handles
+  email confirmation code exchange. UI buttons are disabled when not
+  authenticated. Environment needs `NEXT_PUBLIC_SUPABASE_URL` and
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` (the URL is shared by both browser and
+  server clients).
+- **Frontend summary state:** Summaries are stored in `Map<string, FilingSummary>` keyed by `filingUrl`. Loading state is tracked per-URL with a `Set<string>`. Expanded panels are tracked per transaction ID (`Set<number>`) so rows sharing the same filing URL can independently show/hide their panel. Deep analysis URLs are tracked in a separate `Set<string>`. All state lives in the `Home` component to persist across expand/collapse cycles.
+- **Summary deduplication:** `handleSummarize` checks `summaryLoading` before firing a fetch — if the URL is already in flight, no duplicate request is made. `summarizeCompany` pre-computes `toFetch` synchronously (before any awaits) using a `seenUrls` set to ensure each URL appears at most once in the batch.
+- **React Fragment in table body:** Transaction rows use `<Fragment key={t.id}>` to render an optional summary `<tr>` after each data row without breaking HTML table structure. `Fragment` is imported from React directly (not the `<>` shorthand, which doesn't support `key`).
 - **Ownership form types:** Forms 3 (initial), 4 (changes), and 5
   (annual amendments) all use the same SEC ownership XML schema and
   are parsed by `parseForm4` in `src/lib/parseForm4.ts`. The ingest

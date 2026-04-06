@@ -4,6 +4,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import { estimateCost } from "@/lib/costs";
 import { secFetch } from "@/lib/sec";
 import { parseForm4 } from "@/lib/parseForm4";
+import { getAuthUser, unauthorizedResponse } from "@/lib/auth";
 import type { ApiError, FilingSummary, ImpactRating, SummaryTransaction } from "@/lib/types";
 import type { TextBlock } from "@anthropic-ai/sdk/resources/messages.js";
 
@@ -59,6 +60,10 @@ function extractFlags(text: string): string[] {
 // ── Route handler ──────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  // ── Auth gate ──
+  const user = await getAuthUser(req);
+  if (!user) return unauthorizedResponse();
+
   const { searchParams } = new URL(req.url);
   const filingUrl = searchParams.get("url");
   const deepAnalysis = searchParams.get("deep_analysis") === "true";
@@ -261,7 +266,7 @@ export async function GET(req: NextRequest) {
     // ── Store in Supabase ──
     if (supabase) {
       try {
-        await supabase.from("filing_summaries").upsert(
+        const { error: upsertErr } = await supabase.from("filing_summaries").upsert(
           {
             filing_url: filingUrl,
             deep_analysis: deepAnalysis,
@@ -278,8 +283,28 @@ export async function GET(req: NextRequest) {
           },
           { onConflict: "filing_url,deep_analysis" }
         );
-      } catch {
-        // Non-fatal: caching failure shouldn't break the response.
+        if (upsertErr) {
+          // Fallback: try without newer columns that may not exist yet
+          console.warn("[summarize] upsert failed, trying legacy columns:", upsertErr.message);
+          const { error: legacyErr } = await supabase.from("filing_summaries").upsert(
+            {
+              filing_url: filingUrl,
+              deep_analysis: deepAnalysis,
+              summary: result.summary,
+              impact_rating: result.impactRating,
+              flags: result.flags,
+              model_used: result.modelUsed,
+              estimated_cost: result.estimatedCost,
+              created_at: new Date().toISOString(),
+            },
+            { onConflict: "filing_url,deep_analysis" }
+          );
+          if (legacyErr) {
+            console.warn("[summarize] legacy upsert also failed:", legacyErr.message);
+          }
+        }
+      } catch (e) {
+        console.warn("[summarize] cache store error:", e instanceof Error ? e.message : e);
       }
     }
 
