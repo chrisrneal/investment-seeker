@@ -41,12 +41,23 @@ export type SignalBreakdown = {
   priceDipScore: number;
 };
 
+export type FundamentalsSnapshot = {
+  trailingPE: number | null;
+  revenueGrowth: number | null;
+  grossMargins: number | null;
+  totalCash: number | null;
+  debtToEquity: number | null;
+  /** ISO 8601 timestamp of when this snapshot was fetched. */
+  fetchedAt: string;
+};
+
 export type ScoredSignal = {
   score: number;
   rationale: string;
   breakdown: SignalBreakdown;
   ticker: string;
   transactionCount: number;
+  fundamentals: FundamentalsSnapshot | null;
 };
 
 // ── AI filing summary ──────────────────────────────────────────────

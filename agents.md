@@ -11,6 +11,24 @@ After every development task (feature addition, bug fix, refactor, configuration
 1. **Update `readme.md`** — Reflect any new features, setup changes, dependencies, or usage instructions resulting from the work.
 2. **Update this file (`agents.md`)** — Record any new conventions, architectural decisions, project structure changes, or agent-specific context discovered during development.
 
+## Pre-PR Checklist
+
+Before opening or updating any pull request, you **must** complete all of the following steps in order:
+
+1. **Run migrations** — if any new SQL files were added to `migrations/`, apply them:
+   ```
+   npm run migrate
+   ```
+   Verify the output shows all pending migrations applied with ✅. Fix any errors before continuing.
+
+2. **Build the app** — confirm the production build compiles cleanly with no TypeScript errors:
+   ```
+   npm run build
+   ```
+   The build must complete without errors. Resolve any type errors or compilation failures before opening a PR.
+
+Only proceed to open the PR after both commands succeed.
+
 ## Documentation Update Checklist
 
 After each development task, review and update as needed:
@@ -39,13 +57,14 @@ After each development task, review and update as needed:
   `https://efts.sec.gov/LATEST/search-index`.
 - `src/lib/types.ts` — shared TypeScript types for filings, transactions, scores, summaries, and API errors.
 - `src/lib/parseForm4.ts` — Ownership XML parser for Forms 3, 4, 5. Extracts issuer info, owner CIK/name/title/relationship, and structured transaction data. Flags notable transactions (open-market buys > $100K).
-- `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance.
+- `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance v8 chart API and company fundamentals (trailingPE, revenueGrowth, grossMargins, totalCash, debtToEquity) from Yahoo Finance v10 quoteSummary API. Fundamentals are cached in `fundamentals_cache` with a 24-hour TTL.
 - `src/lib/anthropic.ts` — shared singleton Anthropic client instance.
 - `src/lib/supabase.ts` — shared singleton Supabase client instance.
 - `src/lib/ingestJobs.ts` — In-memory job store for tracking ingestion progress. Supports step-level tracking with sub-progress, hung detection, and TTL-based cleanup.
 - `src/lib/costs.ts` — Anthropic API cost estimator from token usage. Accounts for prompt caching discounts.
 - `scripts/migrate.ts` — Database migration runner. Reads SQL files from `migrations/`, tracks applied migrations in `_migrations` table.
 - `migrations/001_normalized_schema.sql` — Creates normalized schema: `companies`, `insiders`, `company_insiders`, `transactions`. Drops old `filings` table.
+- `migrations/006_fundamentals_cache.sql` — Creates `fundamentals_cache` table (ticker PK, data JSONB, fetched_at). Stores Yahoo Finance quoteSummary fundamentals with 24h TTL enforced in app code.
 - `vercel.json` — Vercel deployment config.
 - `.env.example` — documents all required environment variables.
 
@@ -112,7 +131,14 @@ After each development task, review and update as needed:
 - **Signal scoring:** Five weighted signals summing to max 100. Price dip
   data comes from Yahoo Finance v8 chart API (free, no key required).
   Returns 0.5 (neutral) when price data is unavailable so the score
-  degrades gracefully.
+  degrades gracefully. Fundamentals (trailingPE, revenueGrowth, grossMargins,
+  totalCash, debtToEquity) are fetched in parallel from Yahoo Finance v10
+  quoteSummary and attached to `ScoredSignal.fundamentals`. Results are cached
+  in the `fundamentals_cache` Supabase table for 24 hours. Both the price and
+  fundamentals fetches degrade gracefully (`null`) if unavailable.
+- **FundamentalsSnapshot type:** All fundamentals fields are `number | null`
+  to handle tickers where Yahoo Finance omits certain fields. Always check for
+  null before rendering or computing with these values.
 - **Shared type definitions:** All cross-module types live in
   `src/lib/types.ts`. Import from there rather than redefining types
   locally.
