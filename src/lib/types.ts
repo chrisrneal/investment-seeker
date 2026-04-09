@@ -136,18 +136,38 @@ export type ParsedForm13F = {
 // ── 13D / 13G activist filing ─────────────────────────────────────
 
 export type Parsed13DG = {
+  accessionNo: string;
   filerName: string;
   filerCik: string | null;
-  accessionNo: string;
-  filingType: string;
-  filedAt: string;
-  subjectTicker: string | null;
-  subjectCompany: string;
-  percentAcquired: number | null;
-  acquisitionDate: string | null;
-  /** Up to 500 characters from Item 4 of the filing. */
-  purposeExcerpt: string;
-  filingLink: string;
+  subjectCompanyName: string;
+  subjectCompanyTicker: string | null;
+  subjectCompanyCik: string | null;
+  filingDate: string;
+  percentOfClass: number | null;
+  aggregateAmount: number | null;
+  amendmentType: string | null;
+  /** Up to 1,500 characters from Item 4 (Purpose of Transaction). */
+  item4Excerpt: string | null;
+  primaryDocUrl: string | null;
+};
+
+/** Supabase row shape for thirteen_dg_filings (snake_case). */
+export type ThirteenDGFiling = {
+  id: number;
+  accession_no: string;
+  filer_name: string;
+  filer_cik: string | null;
+  subject_company_name: string;
+  subject_company_ticker: string | null;
+  subject_company_cik: string | null;
+  filing_date: string;
+  filed_at: string;
+  percent_of_class: number | null;
+  aggregate_amount: number | null;
+  amendment_type: string | null;
+  item4_excerpt: string | null;
+  primary_doc_url: string | null;
+  created_at: string;
 };
 
 // ── API error shape ────────────────────────────────────────────────

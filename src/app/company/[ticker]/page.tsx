@@ -54,13 +54,32 @@ type ThirteenFHolding = {
 type ThirteenDGFiling = {
   id: number;
   accessionNo: string;
-  filingType: string;
-  filedAt: string;
   filerName: string;
-  percentAcquired: number | null;
-  acquisitionDate: string | null;
-  purposeExcerpt: string;
-  filingLink: string | null;
+  filerCik: string | null;
+  subjectCompanyName: string;
+  subjectCompanyTicker: string | null;
+  filingDate: string;
+  filedAt: string;
+  percentOfClass: number | null;
+  aggregateAmount: number | null;
+  amendmentType: string | null;
+  item4Excerpt: string | null;
+  primaryDocUrl: string | null;
+};
+
+type ActivistAnalysis = {
+  activistThesis: string;
+  specificDemands: string[];
+  timelineSignals: string[];
+  tone: "cooperative" | "cautious" | "hostile";
+  catalystRisk: string;
+  convergenceNote: string | null;
+  filerCount: number;
+  totalPercentDisclosed: number | null;
+  oldestFilingDate: string | null;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
 };
 
 type Company = {
@@ -508,6 +527,13 @@ export default function CompanyPage() {
   const [deepUrls, setDeepUrls] = useState<Set<string>>(new Set());
   const [companySummarizing, setCompanySummarizing] = useState(false);
 
+  // ── Activist analysis state ────────────────────────────────────
+  const [activistAnalysis, setActivistAnalysis] = useState<ActivistAnalysis | null>(null);
+  const [activistLoading, setActivistLoading] = useState(false);
+  const [activistError, setActivistError] = useState("");
+  const [activistExpanded, setActivistExpanded] = useState(false);
+  const [expandedItem4, setExpandedItem4] = useState<Set<number>>(new Set());
+
   // ── Load company data ──────────────────────────────────────────
 
   const loadCompany = useCallback(async () => {
@@ -678,6 +704,32 @@ export default function CompanyPage() {
     }
 
     setCompanySummarizing(false);
+  }
+
+  async function fetchActivistAnalysis() {
+    if (activistLoading) return;
+    if (activistAnalysis && activistExpanded) {
+      setActivistExpanded(false);
+      return;
+    }
+    if (activistAnalysis) {
+      setActivistExpanded(true);
+      return;
+    }
+    setActivistLoading(true);
+    setActivistError("");
+    setActivistExpanded(true);
+    try {
+      const res = await fetch(`/api/analyze/activist?ticker=${encodeURIComponent(ticker)}`);
+      const data: ActivistAnalysis & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Analysis failed");
+      setActivistAnalysis(data);
+    } catch (e) {
+      setActivistError(e instanceof Error ? e.message : "Unknown error");
+      setActivistExpanded(false);
+    } finally {
+      setActivistLoading(false);
+    }
   }
 
   // ── Computed values ────────────────────────────────────────────
@@ -1242,60 +1294,229 @@ export default function CompanyPage() {
 
           {activeTab === "13dg" && company.thirteenDGFilings && (
             <div>
+              {/* Analyze button */}
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+                <button
+                  onClick={() => void fetchActivistAnalysis()}
+                  disabled={activistLoading || !isAuthenticated}
+                  title={isAuthenticated ? "Analyze activist thesis with AI" : "Sign in to use AI features"}
+                  style={{
+                    ...btn(activistExpanded && activistAnalysis ? "#2a1a3a" : "#1a1a3a"),
+                    padding: "6px 14px",
+                    fontSize: 13,
+                    opacity: activistLoading || !isAuthenticated ? 0.6 : 1,
+                  }}
+                >
+                  {activistLoading ? "Analyzing…" : activistExpanded && activistAnalysis ? "▴ Activist Thesis" : "✦ Analyze Activist Thesis"}
+                </button>
+              </div>
+
+              {activistError && (
+                <p style={{ color: "#ff8a8a", fontSize: 13, margin: "0 0 10px" }}>{activistError}</p>
+              )}
+
+              {/* Activist Analysis Panel */}
+              {activistExpanded && activistAnalysis && (() => {
+                const thesisBg: Record<string, string> = {
+                  "Strategic Sale / M&A": "#3a1a1a",
+                  "Board Reconstitution": "#2a1a00",
+                  "Business Separation / Spin-off": "#3a1a1a",
+                  "Operational Improvement": "#2a2000",
+                  "Management Change": "#2a2000",
+                  "Balance Sheet Restructuring": "#2a2000",
+                  "Capital Return / Buyback": "#0d2a2a",
+                  "Undervaluation / Passive Accumulation": "#0d2a2a",
+                };
+                const thesisColor: Record<string, string> = {
+                  "Strategic Sale / M&A": "#ff8a8a",
+                  "Board Reconstitution": "#ffd080",
+                  "Business Separation / Spin-off": "#ff8a8a",
+                  "Operational Improvement": "#ffd080",
+                  "Management Change": "#ffd080",
+                  "Balance Sheet Restructuring": "#ffd080",
+                  "Capital Return / Buyback": "#6ecfcf",
+                  "Undervaluation / Passive Accumulation": "#6ecfcf",
+                };
+                const toneBg: Record<string, string> = {
+                  cooperative: "#0d2d1a",
+                  cautious: "#2a2000",
+                  hostile: "#2d0d0d",
+                };
+                const toneColor: Record<string, string> = {
+                  cooperative: "#6ecf8a",
+                  cautious: "#ffd080",
+                  hostile: "#ff8a8a",
+                };
+                const bg = thesisBg[activistAnalysis.activistThesis] ?? "#1a1a2a";
+                const color = thesisColor[activistAnalysis.activistThesis] ?? "#c084fc";
+                return (
+                  <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #2a1a3a" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                      <span style={{ ...badge(bg), color, fontWeight: 700, fontSize: 13 }}>
+                        {activistAnalysis.activistThesis}
+                      </span>
+                      <span style={{ ...badge(toneBg[activistAnalysis.tone] ?? "#1a2030"), color: toneColor[activistAnalysis.tone] ?? "#9aa4ad", fontSize: 12 }}>
+                        {activistAnalysis.tone}
+                      </span>
+                      {activistAnalysis.filerCount > 1 && (
+                        <span style={{ ...badge("#1a2030"), fontSize: 12 }}>
+                          {activistAnalysis.filerCount} filers
+                        </span>
+                      )}
+                      {activistAnalysis.totalPercentDisclosed != null && activistAnalysis.totalPercentDisclosed > 0 && (
+                        <span style={{ ...badge("#1a3a1a"), color: "#6ecf8a", fontWeight: 700, fontSize: 12 }}>
+                          {activistAnalysis.totalPercentDisclosed.toFixed(1)}% total disclosed
+                        </span>
+                      )}
+                      {activistAnalysis.cached && (
+                        <span style={{ color: "#7cc4ff", fontSize: 11, marginLeft: "auto" }}>⚡ cached</span>
+                      )}
+                    </div>
+
+                    {activistAnalysis.specificDemands.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+                          Specific Demands
+                        </div>
+                        <ul style={{ margin: 0, paddingLeft: 18, color: "#c8d4e0", fontSize: 13, lineHeight: 1.7 }}>
+                          {activistAnalysis.specificDemands.map((d, i) => (
+                            <li key={i}>{d}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {activistAnalysis.timelineSignals.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+                          Timeline Signals
+                        </div>
+                        <ul style={{ margin: 0, paddingLeft: 18, color: "#c8d4e0", fontSize: 13, lineHeight: 1.7 }}>
+                          {activistAnalysis.timelineSignals.map((s, i) => (
+                            <li key={i}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {activistAnalysis.catalystRisk && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+                          Catalyst Risk
+                        </div>
+                        <p style={{ margin: 0, color: "#ff8a8a", fontSize: 13, lineHeight: 1.6 }}>
+                          {activistAnalysis.catalystRisk}
+                        </p>
+                      </div>
+                    )}
+
+                    {activistAnalysis.convergenceNote && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+                          Convergence
+                        </div>
+                        <p style={{ margin: 0, color: "#9aa4ad", fontSize: 13, lineHeight: 1.6 }}>
+                          {activistAnalysis.convergenceNote}
+                        </p>
+                      </div>
+                    )}
+
+                    <div style={{ color: "#4a5a6a", fontSize: 11, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span>{activistAnalysis.modelUsed}</span>
+                      <span>·</span>
+                      <span>${activistAnalysis.estimatedCost.toFixed(6)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Filings table */}
               {company.thirteenDGFilings.length === 0 && (
                 <p style={{ color: "#7a8a9a", fontSize: 13, margin: "8px 0 0" }}>
                   No activist filings recorded.
                 </p>
               )}
-              {company.thirteenDGFilings.map((f) => (
-                <div
-                  key={f.id}
-                  style={{
-                    marginBottom: 12,
-                    padding: "14px 16px",
-                    background: "#0c1218",
-                    borderRadius: 8,
-                    border: "1px solid #2a1a3a",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                    <span style={badge("#2a1a3a")}>
-                      {f.filingType}
-                    </span>
-                    <span style={{ color: "#9aa4ad", fontSize: 12, whiteSpace: "nowrap" }}>
-                      {f.filedAt}
-                    </span>
-                    <strong style={{ color: "#c8d4e0", fontSize: 14 }}>
-                      {f.filerName}
-                    </strong>
-                    {f.percentAcquired != null && (
-                      <span style={{ ...badge("#1a3a1a"), color: "#6ecf8a", fontWeight: 700 }}>
-                        {f.percentAcquired}%
-                      </span>
-                    )}
-                    {f.acquisitionDate && (
-                      <span style={{ color: "#7a8a9a", fontSize: 12 }}>
-                        acquired {f.acquisitionDate}
-                      </span>
-                    )}
-                    {f.filingLink && (
-                      <a
-                        href={f.filingLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ color: "#7cc4ff", fontSize: 12, marginLeft: "auto" }}
-                      >
-                        SEC↗
-                      </a>
-                    )}
-                  </div>
-                  {f.purposeExcerpt && (
-                    <p style={{ margin: 0, color: "#9aa4ad", fontSize: 13, lineHeight: 1.55 }}>
-                      {f.purposeExcerpt}
-                    </p>
-                  )}
+              {company.thirteenDGFilings.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid #2a3a4a", color: "#8ca2b8", textAlign: "left" }}>
+                        <th style={{ padding: "8px" }}>Filer</th>
+                        <th style={{ padding: "8px", textAlign: "right" }}>% of Class</th>
+                        <th style={{ padding: "8px" }}>Filing Date</th>
+                        <th style={{ padding: "8px" }}>Amendment</th>
+                        <th style={{ padding: "8px" }}>Item 4</th>
+                        <th style={{ padding: "8px" }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {company.thirteenDGFilings.map((f) => (
+                        <Fragment key={f.id}>
+                          <tr style={{ borderBottom: "1px solid #1a2530" }}>
+                            <td style={{ padding: "8px", color: "#c8d4e0", maxWidth: 180 }}>
+                              {f.filerName}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                              {f.percentOfClass != null ? (
+                                <span style={{ ...badge("#1a3a1a"), color: "#6ecf8a", fontWeight: 700 }}>
+                                  {f.percentOfClass}%
+                                </span>
+                              ) : (
+                                <span style={{ color: "#4a5a6a" }}>—</span>
+                              )}
+                            </td>
+                            <td style={{ padding: "8px", color: "#9aa4ad", whiteSpace: "nowrap" }}>
+                              {f.filingDate}
+                            </td>
+                            <td style={{ padding: "8px" }}>
+                              {f.amendmentType ? (
+                                <span style={badge("#2a1a1a")}>{f.amendmentType}</span>
+                              ) : (
+                                <span style={{ color: "#4a5a6a" }}>—</span>
+                              )}
+                            </td>
+                            <td style={{ padding: "8px", color: "#9aa4ad", maxWidth: 260 }}>
+                              {f.item4Excerpt ? (
+                                <span
+                                  style={{ cursor: "pointer" }}
+                                  onClick={() =>
+                                    setExpandedItem4((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(f.id)) next.delete(f.id);
+                                      else next.add(f.id);
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  {expandedItem4.has(f.id)
+                                    ? f.item4Excerpt
+                                    : f.item4Excerpt.length > 120
+                                      ? f.item4Excerpt.slice(0, 120) + "… ▾"
+                                      : f.item4Excerpt}
+                                </span>
+                              ) : (
+                                <span style={{ color: "#4a5a6a" }}>—</span>
+                              )}
+                            </td>
+                            <td style={{ padding: "8px", whiteSpace: "nowrap" }}>
+                              {f.primaryDocUrl && (
+                                <a
+                                  href={f.primaryDocUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={{ color: "#7cc4ff", fontSize: 12 }}
+                                >
+                                  SEC↗
+                                </a>
+                              )}
+                            </td>
+                          </tr>
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </section>

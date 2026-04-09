@@ -53,10 +53,12 @@ export async function GET(
     shares: number; investment_discretion: string | null; put_call: string | null;
   };
   type ThirteenDGRow = {
-    id: number; accession_no: string; filing_type: string; filed_at: string;
-    filer_name: string; filer_cik: string | null; subject_ticker: string | null;
-    subject_company: string; percent_acquired: number | null;
-    acquisition_date: string | null; purpose_excerpt: string; filing_link: string | null;
+    id: number; accession_no: string; filer_name: string; filer_cik: string | null;
+    subject_company_name: string; subject_company_ticker: string | null;
+    subject_company_cik: string | null; filing_date: string; filed_at: string;
+    percent_of_class: number | null; aggregate_amount: number | null;
+    amendment_type: string | null; item4_excerpt: string | null;
+    primary_doc_url: string | null; created_at: string;
   };
   type DbResult<T> = { data: T[] | null; error: { message: string } | null };
 
@@ -138,9 +140,9 @@ export async function GET(
   // Fetch 13D/13G activist filings for this ticker
   const { data: thirteenDGs, error: thirteenDGErr } = await supabase
     .from("thirteen_dg_filings")
-    .select("id, accession_no, filing_type, filed_at, filer_name, filer_cik, subject_ticker, subject_company, percent_acquired, acquisition_date, purpose_excerpt, filing_link")
-    .ilike("subject_ticker", tickerUpper)
-    .order("filed_at", { ascending: false })
+    .select("id, accession_no, filer_name, filer_cik, subject_company_name, subject_company_ticker, subject_company_cik, filing_date, filed_at, percent_of_class, aggregate_amount, amendment_type, item4_excerpt, primary_doc_url, created_at")
+    .ilike("subject_company_ticker", tickerUpper)
+    .order("filing_date", { ascending: false })
     .limit(200) as DbResult<ThirteenDGRow>;
 
   if (thirteenDGErr) return errorJson("Failed to query 13D/13G filings", thirteenDGErr.message, 500);
@@ -271,13 +273,18 @@ export async function GET(
     thirteenDGFilings: (thirteenDGs ?? []).map((f) => ({
       id: f.id,
       accessionNo: f.accession_no,
-      filingType: f.filing_type,
-      filedAt: f.filed_at,
       filerName: f.filer_name,
-      percentAcquired: f.percent_acquired,
-      acquisitionDate: f.acquisition_date,
-      purposeExcerpt: f.purpose_excerpt,
-      filingLink: f.filing_link,
+      filerCik: f.filer_cik,
+      subjectCompanyName: f.subject_company_name,
+      subjectCompanyTicker: f.subject_company_ticker,
+      subjectCompanyCik: f.subject_company_cik,
+      filingDate: f.filing_date,
+      filedAt: f.filed_at,
+      percentOfClass: f.percent_of_class,
+      aggregateAmount: f.aggregate_amount,
+      amendmentType: f.amendment_type,
+      item4Excerpt: f.item4_excerpt,
+      primaryDocUrl: f.primary_doc_url,
     })),
   };
 
