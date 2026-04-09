@@ -57,6 +57,7 @@ After each development task, review and update as needed:
   `https://efts.sec.gov/LATEST/search-index`.
 - `src/lib/types.ts` — shared TypeScript types for filings, transactions, scores, summaries, and API errors.
 - `src/lib/parseForm4.ts` — Ownership XML parser for Forms 3, 4, 5. Extracts issuer info, owner CIK/name/title/relationship, and structured transaction data. Flags notable transactions (open-market buys > $100K).
+- `src/lib/sec.ts` — SEC EDGAR client. Also exports `fetchAnnualFilingDoc(filing, ticker)` (processes one 10-Q/10-K filing result into an `AnnualFilingResult`) and `fetchAnnualFilings(ticker)` (last 4 quarterly + 2 annual filings for a specific ticker, with MD&A extraction).
 - `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance v8 chart API and company fundamentals (trailingPE, revenueGrowth, grossMargins, totalCash, debtToEquity) from Yahoo Finance v10 quoteSummary API. Fundamentals are cached in `fundamentals_cache` with a 24-hour TTL.
 - `src/lib/anthropic.ts` — shared singleton Anthropic client instance.
 - `src/lib/supabase.ts` — shared singleton Supabase client instance.
@@ -65,6 +66,7 @@ After each development task, review and update as needed:
 - `scripts/migrate.ts` — Database migration runner. Reads SQL files from `migrations/`, tracks applied migrations in `_migrations` table.
 - `migrations/001_normalized_schema.sql` — Creates normalized schema: `companies`, `insiders`, `company_insiders`, `transactions`. Drops old `filings` table.
 - `migrations/006_fundamentals_cache.sql` — Creates `fundamentals_cache` table (ticker PK, data JSONB, fetched_at). Stores Yahoo Finance quoteSummary fundamentals with 24h TTL enforced in app code.
+- `migrations/007_annual_filings.sql` — Creates `annual_filings` table with columns: ticker, form_type, filing_date, period_of_report, primary_doc_url, mda_excerpt. Unique on (ticker, form_type, filing_date). Populated by the ingest pipeline.
 - `vercel.json` — Vercel deployment config.
 - `.env.example` — documents all required environment variables.
 
@@ -139,6 +141,9 @@ After each development task, review and update as needed:
 - **FundamentalsSnapshot type:** All fundamentals fields are `number | null`
   to handle tickers where Yahoo Finance omits certain fields. Always check for
   null before rendering or computing with these values.
+- **Annual filings (10-Q/10-K):** The ingest pipeline step "Fetch annual filings" runs after the 13F step. With a ticker it calls `fetchAnnualFilings(ticker)` (last 4 Q + 2 K). Without a ticker it searches a 1-year window (25 Q + 25 K, capped). Results are stored in `annual_filings` via upsert on `(ticker, form_type, filing_date)`.
+- **MD&A extraction:** `extractMdaExcerpt` in `sec.ts` searches plain text for an "Item 2" header (with "Management" or "Discussion" nearby), then takes up to 3,000 characters until the next "Item 3". For 10-K filings where Item 2 isn't found, it falls back to Item 7. Last resort: first 3,000 characters of the document.
+- **10-Q/10-K filing type aliases:** `FORM_ALIASES` in `/api/filings/route.ts` maps "10-q", "10q", "10-k", "10k" to "10-Q"/"10-K" respectively, making them searchable via `GET /api/filings?type=10-q`.
 - **Shared type definitions:** All cross-module types live in
   `src/lib/types.ts`. Import from there rather than redefining types
   locally.

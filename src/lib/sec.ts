@@ -190,6 +190,176 @@ export async function searchFilings(
   return { results, total };
 }
 
+// ── Annual filings (10-Q / 10-K) ─────────────────────────────────────────────
+
+export type AnnualFilingResult = {
+  ticker: string;
+  formType: string;
+  filingDate: string;
+  /** ISO date string parsed from the EDGAR filing index; empty if unavailable. */
+  periodOfReport: string;
+  primaryDocUrl: string | null;
+  /** Up to 3,000 characters of plain text from the MD&A section. */
+  mdaExcerpt: string;
+};
+
+function stripAnnualHtml(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#\d+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegexChars(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Find the URL of the primary document (10-Q or 10-K, not an amendment) from
+ * the EDGAR filing index HTML. Falls back to the first .htm link if needed.
+ */
+function findAnnualPrimaryDocUrl(
+  indexHtml: string,
+  formType: string,
+  baseUrl: string
+): string | null {
+  const typeRe = new RegExp(`>\\s*${escapeRegexChars(formType)}\\s*<`, "i");
+  const amendRe = new RegExp(`>\\s*${escapeRegexChars(formType)}/A\\s*<`, "i");
+
+  for (const rowMatch of indexHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const row = rowMatch[1];
+    if (typeRe.test(row) && !amendRe.test(row)) {
+      const m = row.match(/href="([^"]+\.htm[l]?)"/i);
+      if (m) {
+        return m[1].startsWith("http") ? m[1] : new URL(m[1], baseUrl).toString();
+      }
+    }
+  }
+  // Fallback: first .htm link in the index
+  const m = indexHtml.match(/href="([^"]+\.htm[l]?)"/i);
+  return m ? (m[1].startsWith("http") ? m[1] : new URL(m[1], baseUrl).toString()) : null;
+}
+
+/**
+ * Extract the "Period of Report" value from an EDGAR filing index page.
+ * The index contains a row like: <td>Period of Report:</td><td>2024-03-31</td>
+ */
+function parsePeriodOfReport(indexHtml: string): string {
+  const m = indexHtml.match(/period\s+of\s+report[^<]*<\/td>\s*<td[^>]*>([^<]+)/i);
+  return m ? m[1].trim() : "";
+}
+
+const MDA_MAX_LENGTH = 3000;
+
+/**
+ * Locate the MD&A section in plain text and return up to 3,000 characters.
+ *
+ * Strategy:
+ *  1. Find "Item 2" followed by "Management" or "Discussion" (works for 10-Q
+ *     and 10-K alike — 10-Q Item 2 IS the MD&A section).
+ *  2. For 10-K, fall back to "Item 7" if Item 2 isn't found.
+ *  3. Last resort: return the first 3,000 characters of the document.
+ */
+function extractMdaExcerpt(plainText: string, formType: string): string {
+  const item2Start = plainText.search(
+    /\bitem\s+2\b[^a-z0-9]*(?:management|discussion)/i
+  );
+  if (item2Start !== -1) {
+    const after = plainText.slice(item2Start);
+    const endIdx = after.search(/\bitem\s+3\b/i);
+    return (endIdx !== -1 ? after.slice(0, endIdx) : after)
+      .trim()
+      .slice(0, MDA_MAX_LENGTH);
+  }
+
+  if (formType === "10-K") {
+    const item7Start = plainText.search(
+      /\bitem\s+7\b[^a-z0-9]*(?:management|discussion)/i
+    );
+    if (item7Start !== -1) {
+      const after = plainText.slice(item7Start);
+      const endIdx = after.search(/\bitem\s+(?:7a|8)\b/i);
+      return (endIdx !== -1 ? after.slice(0, endIdx) : after)
+        .trim()
+        .slice(0, MDA_MAX_LENGTH);
+    }
+  }
+
+  return plainText.slice(0, MDA_MAX_LENGTH);
+}
+
+/**
+ * Fetch the primary document of a single 10-Q or 10-K filing result,
+ * parse the MD&A section, and return a structured `AnnualFilingResult`.
+ *
+ * All network failures are non-fatal — partial results are returned.
+ */
+export async function fetchAnnualFilingDoc(
+  filing: FilingResult,
+  ticker: string
+): Promise<AnnualFilingResult> {
+  const base: AnnualFilingResult = {
+    ticker: ticker.toUpperCase(),
+    formType: filing.filingType,
+    filingDate: filing.filingDate,
+    periodOfReport: "",
+    primaryDocUrl: null,
+    mdaExcerpt: "",
+  };
+
+  let indexHtml: string;
+  try {
+    const res = await secFetch(filing.link);
+    if (!res.ok) return base;
+    indexHtml = await res.text();
+  } catch {
+    return base;
+  }
+
+  const primaryDocUrl = findAnnualPrimaryDocUrl(indexHtml, filing.filingType, filing.link);
+  const periodOfReport = parsePeriodOfReport(indexHtml);
+
+  if (!primaryDocUrl) return { ...base, periodOfReport };
+
+  try {
+    const docRes = await secFetch(primaryDocUrl);
+    if (!docRes.ok) return { ...base, primaryDocUrl, periodOfReport };
+    const plainText = stripAnnualHtml(await docRes.text());
+    const mdaExcerpt = extractMdaExcerpt(plainText, filing.filingType);
+    return { ...base, primaryDocUrl, periodOfReport, mdaExcerpt };
+  } catch {
+    return { ...base, primaryDocUrl, periodOfReport };
+  }
+}
+
+/**
+ * Fetch the last 4 quarterly (10-Q) and 2 annual (10-K) filings for `ticker`,
+ * extract the MD&A section from each primary document, and return the results.
+ */
+export async function fetchAnnualFilings(ticker: string): Promise<AnnualFilingResult[]> {
+  const [qRes, kRes] = await Promise.all([
+    searchFilings({ formType: "10-Q", ticker, pageSize: 4 })
+      .then((r) => r.results)
+      .catch(() => [] as FilingResult[]),
+    searchFilings({ formType: "10-K", ticker, pageSize: 2 })
+      .then((r) => r.results)
+      .catch(() => [] as FilingResult[]),
+  ]);
+
+  const results: AnnualFilingResult[] = [];
+  for (const filing of [...qRes, ...kRes]) {
+    results.push(await fetchAnnualFilingDoc(filing, ticker));
+  }
+  return results;
+}
+
 /**
  * Paginate through all EDGAR search results for a form type within a date range.
  * - Caps at `maxResults` to stay within SEC fair-access bounds.

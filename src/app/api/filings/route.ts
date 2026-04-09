@@ -18,6 +18,10 @@ const FORM_ALIASES: Record<string, string> = {
   "13f": "13F-HR",
   "13f-hr": "13F-HR",
   "13f-nt": "13F-NT",
+  "10-q": "10-Q",
+  "10q": "10-Q",
+  "10-k": "10-K",
+  "10k": "10-K",
 };
 
 function normalizeForm(input: string): string | null {

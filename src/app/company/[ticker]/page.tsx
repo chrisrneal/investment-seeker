@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState, useRef, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import type { FilingSummary } from "@/lib/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { User, Session } from "@supabase/supabase-js";
@@ -51,6 +51,18 @@ type ThirteenFHolding = {
   putCall: string | null;
 };
 
+type ThirteenDGFiling = {
+  id: number;
+  accessionNo: string;
+  filingType: string;
+  filedAt: string;
+  filerName: string;
+  percentAcquired: number | null;
+  acquisitionDate: string | null;
+  purposeExcerpt: string;
+  filingLink: string | null;
+};
+
 type Company = {
   cik: string;
   name: string;
@@ -59,6 +71,7 @@ type Company = {
   insiders: Insider[];
   eightKEvents?: EightKEvent[];
   thirteenFHoldings?: ThirteenFHolding[];
+  thirteenDGFilings?: ThirteenDGFiling[];
 };
 
 // ── Styles ─────────────────────────────────────────────────────────
@@ -443,7 +456,6 @@ function SummaryPanel({
 
 export default function CompanyPage() {
   const { ticker } = useParams<{ ticker: string }>();
-  const router = useRouter();
 
   const [company, setCompany] = useState<Company | null>(null);
   const [loading, setLoading] = useState(true);
@@ -506,8 +518,7 @@ export default function CompanyPage() {
       const data = await res.json();
 
       if (res.status === 404) {
-        // Redirect home with error
-        router.replace(`/?error=${encodeURIComponent(`Company with ticker "${ticker.toUpperCase()}" not found.`)}`);
+        setLoadError(`No data found for "${ticker.toUpperCase()}". Search for this ticker on the home page to ingest its filings.`);
         return;
       }
 
@@ -555,7 +566,7 @@ export default function CompanyPage() {
     } finally {
       setLoading(false);
     }
-  }, [ticker, router]);
+  }, [ticker]);
 
   useEffect(() => {
     loadCompany();
@@ -677,6 +688,7 @@ export default function CompanyPage() {
   ) ?? 0;
   const eightKEventsCount = company?.eightKEvents?.length ?? 0;
   const thirteenFHoldingsCount = company?.thirteenFHoldings?.length ?? 0;
+  const thirteenDGCount = company?.thirteenDGFilings?.length ?? 0;
 
   // Collect unique loaded summaries for overview block
   const companySummaryEntries = (() => {
@@ -808,6 +820,11 @@ export default function CompanyPage() {
                 {thirteenFHoldingsCount} 13F
               </span>
             )}
+            {thirteenDGCount > 0 && (
+              <span style={badge("#2a1a3a")}>
+                {thirteenDGCount} activist
+              </span>
+            )}
           </div>
 
           {/* ── Tabs ── */}
@@ -847,6 +864,19 @@ export default function CompanyPage() {
                 }}
               >
                 13F Holdings ({thirteenFHoldingsCount})
+              </button>
+            )}
+            {thirteenDGCount > 0 && (
+              <button
+                onClick={() => setActiveTab("13dg")}
+                style={{
+                  background: "none", border: "none", padding: "8px 0", cursor: "pointer",
+                  fontSize: 14, fontWeight: 600,
+                  color: activeTab === "13dg" ? "#e6e8eb" : "#7a8a9a",
+                  borderBottom: activeTab === "13dg" ? "2px solid #c084fc" : "2px solid transparent",
+                }}
+              >
+                Activist Activity ({thirteenDGCount})
               </button>
             )}
           </div>
@@ -1207,6 +1237,65 @@ export default function CompanyPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {activeTab === "13dg" && company.thirteenDGFilings && (
+            <div>
+              {company.thirteenDGFilings.length === 0 && (
+                <p style={{ color: "#7a8a9a", fontSize: 13, margin: "8px 0 0" }}>
+                  No activist filings recorded.
+                </p>
+              )}
+              {company.thirteenDGFilings.map((f) => (
+                <div
+                  key={f.id}
+                  style={{
+                    marginBottom: 12,
+                    padding: "14px 16px",
+                    background: "#0c1218",
+                    borderRadius: 8,
+                    border: "1px solid #2a1a3a",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                    <span style={badge("#2a1a3a")}>
+                      {f.filingType}
+                    </span>
+                    <span style={{ color: "#9aa4ad", fontSize: 12, whiteSpace: "nowrap" }}>
+                      {f.filedAt}
+                    </span>
+                    <strong style={{ color: "#c8d4e0", fontSize: 14 }}>
+                      {f.filerName}
+                    </strong>
+                    {f.percentAcquired != null && (
+                      <span style={{ ...badge("#1a3a1a"), color: "#6ecf8a", fontWeight: 700 }}>
+                        {f.percentAcquired}%
+                      </span>
+                    )}
+                    {f.acquisitionDate && (
+                      <span style={{ color: "#7a8a9a", fontSize: 12 }}>
+                        acquired {f.acquisitionDate}
+                      </span>
+                    )}
+                    {f.filingLink && (
+                      <a
+                        href={f.filingLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: "#7cc4ff", fontSize: 12, marginLeft: "auto" }}
+                      >
+                        SEC↗
+                      </a>
+                    )}
+                  </div>
+                  {f.purposeExcerpt && (
+                    <p style={{ margin: 0, color: "#9aa4ad", fontSize: 13, lineHeight: 1.55 }}>
+                      {f.purposeExcerpt}
+                    </p>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </section>

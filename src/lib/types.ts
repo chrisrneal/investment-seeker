@@ -39,6 +39,8 @@ export type SignalBreakdown = {
   purchaseTypeScore: number;
   relativeHoldingsScore: number;
   priceDipScore: number;
+  /** +10 bonus when short float >20% and insider buying is present. */
+  shortInterestBonus: number;
 };
 
 export type FundamentalsSnapshot = {
@@ -51,6 +53,12 @@ export type FundamentalsSnapshot = {
   fetchedAt: string;
 };
 
+export type ShortInterest = {
+  shortPercentOfFloat: number | null;
+  shortRatio: number | null;
+  fetchedAt: string;
+};
+
 export type ScoredSignal = {
   score: number;
   rationale: string;
@@ -58,6 +66,7 @@ export type ScoredSignal = {
   ticker: string;
   transactionCount: number;
   fundamentals: FundamentalsSnapshot | null;
+  shortInterest: ShortInterest | null;
 };
 
 // ── AI filing summary ──────────────────────────────────────────────
@@ -122,6 +131,23 @@ export type ParsedForm13F = {
   periodOfReport: string;
   filingDate: string;
   holdings: Form13FHolding[];
+};
+
+// ── 13D / 13G activist filing ─────────────────────────────────────
+
+export type Parsed13DG = {
+  filerName: string;
+  filerCik: string | null;
+  accessionNo: string;
+  filingType: string;
+  filedAt: string;
+  subjectTicker: string | null;
+  subjectCompany: string;
+  percentAcquired: number | null;
+  acquisitionDate: string | null;
+  /** Up to 500 characters from Item 4 of the filing. */
+  purposeExcerpt: string;
+  filingLink: string;
 };
 
 // ── API error shape ────────────────────────────────────────────────
