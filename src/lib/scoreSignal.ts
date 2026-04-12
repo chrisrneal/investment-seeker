@@ -1,8 +1,12 @@
 import type {
+  FundamentalsSnapshot,
   ParsedForm4Transaction,
   ScoredSignal,
+  ShortInterest,
   SignalBreakdown,
 } from "./types";
+import { getSupabaseClient } from "./supabase";
+import { fetchShortInterest } from "./marketData";
 
 // ── Weight constants (sum to 100) ──────────────────────────────────
 
@@ -57,6 +61,77 @@ async function fetchPriceContext(
   } catch {
     return null;
   }
+}
+
+// ── Fundamentals (Yahoo Finance quoteSummary) ──────────────────────
+
+const FUNDAMENTALS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+async function fetchFundamentals(
+  ticker: string
+): Promise<FundamentalsSnapshot | null> {
+  // 1. Check Supabase cache first.
+  try {
+    const db = getSupabaseClient();
+    const { data: cached } = await db
+      .from("fundamentals_cache")
+      .select("data, fetched_at")
+      .eq("ticker", ticker.toUpperCase())
+      .single();
+
+    if (cached) {
+      const age = Date.now() - new Date(cached.fetched_at as string).getTime();
+      if (age < FUNDAMENTALS_TTL_MS) {
+        return cached.data as FundamentalsSnapshot;
+      }
+    }
+  } catch {
+    // Supabase unavailable — fall through to live fetch.
+  }
+
+  // 2. Fetch from Yahoo Finance quoteSummary.
+  let snapshot: FundamentalsSnapshot | null = null;
+  try {
+    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(
+      ticker
+    )}?modules=financialData,defaultKeyStatistics`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "InvestmentSeeker/1.0" },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const result = json?.quoteSummary?.result?.[0];
+      const fd = result?.financialData;
+      const ks = result?.defaultKeyStatistics;
+      if (fd || ks) {
+        snapshot = {
+          trailingPE: ks?.trailingPE?.raw ?? null,
+          revenueGrowth: fd?.revenueGrowth?.raw ?? null,
+          grossMargins: fd?.grossMargins?.raw ?? null,
+          totalCash: fd?.totalCash?.raw ?? null,
+          debtToEquity: fd?.debtToEquity?.raw ?? null,
+          fetchedAt: new Date().toISOString(),
+        };
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  // 3. Persist to Supabase cache.
+  if (snapshot) {
+    try {
+      const db = getSupabaseClient();
+      await db.from("fundamentals_cache").upsert(
+        { ticker: ticker.toUpperCase(), data: snapshot, fetched_at: snapshot.fetchedAt },
+        { onConflict: "ticker" }
+      );
+    } catch {
+      // Cache write failure is non-fatal.
+    }
+  }
+
+  return snapshot;
 }
 
 // ── Scoring functions (each returns 0-1) ───────────────────────────
@@ -146,7 +221,11 @@ export async function scoreSignal(
   ticker: string,
   transactions: ParsedForm4Transaction[]
 ): Promise<ScoredSignal> {
-  const priceCtx = await fetchPriceContext(ticker);
+  const [priceCtx, fundamentals, shortInterest] = await Promise.all([
+    fetchPriceContext(ticker),
+    fetchFundamentals(ticker),
+    fetchShortInterest(ticker),
+  ]);
 
   const cluster = scoreClusterBuying(transactions);
   const role = scoreInsiderRole(transactions);
@@ -154,12 +233,23 @@ export async function scoreSignal(
   const holdings = scoreRelativeHoldings(transactions);
   const priceDip = scorePriceDip(priceCtx);
 
+  // Bonus +10 when short float >20% AND insider buying present — high short
+  // interest amplifies the significance of insiders going long against the crowd.
+  const hasBuys = transactions.some((t) => t.transactionType === "buy");
+  const shortInterestBonus =
+    hasBuys &&
+    shortInterest?.shortPercentOfFloat != null &&
+    shortInterest.shortPercentOfFloat > 0.20
+      ? 10
+      : 0;
+
   const breakdown: SignalBreakdown = {
     clusterBuyingScore: Math.round(cluster * W_CLUSTER),
     insiderRoleScore: Math.round(role * W_ROLE),
     purchaseTypeScore: Math.round(purchaseType * W_PURCHASE_TYPE),
     relativeHoldingsScore: Math.round(holdings * W_HOLDINGS),
     priceDipScore: Math.round(priceDip * W_PRICE_DIP),
+    shortInterestBonus,
   };
 
   const score = Math.min(
@@ -168,13 +258,15 @@ export async function scoreSignal(
       breakdown.insiderRoleScore +
       breakdown.purchaseTypeScore +
       breakdown.relativeHoldingsScore +
-      breakdown.priceDipScore
+      breakdown.priceDipScore +
+      breakdown.shortInterestBonus
   );
 
   const rationale = buildRationale(
     score,
     transactions,
     priceCtx,
+    shortInterest,
     cluster,
     role,
     purchaseType,
@@ -188,6 +280,8 @@ export async function scoreSignal(
     breakdown,
     ticker,
     transactionCount: transactions.length,
+    fundamentals,
+    shortInterest,
   };
 }
 
@@ -197,6 +291,7 @@ function buildRationale(
   score: number,
   txns: ParsedForm4Transaction[],
   priceCtx: PriceContext | null,
+  shortInterest: ShortInterest | null,
   cluster: number,
   role: number,
   purchaseType: number,
@@ -227,6 +322,16 @@ function buildRationale(
   if (priceCtx) {
     if (priceDip >= 0.7) parts.push("Price near 52-week low — buying the dip.");
     else if (priceDip <= 0.3) parts.push("Price near 52-week high — buying into strength.");
+  }
+
+  if (
+    shortInterest?.shortPercentOfFloat != null &&
+    shortInterest.shortPercentOfFloat > 0.20 &&
+    buys.length > 0
+  ) {
+    parts.push(
+      `High short interest (${(shortInterest.shortPercentOfFloat * 100).toFixed(1)}% of float) — insider buying into elevated short pressure (+10 ICS bonus).`
+    );
   }
 
   const label =

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getAuthUser, unauthorizedResponse } from "@/lib/auth";
-import type { ApiError } from "@/lib/types";
+import { fetchShortInterest } from "@/lib/marketData";
+import { scoreSignal } from "@/lib/scoreSignal";
+import type { ApiError, ParsedForm4Transaction } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,6 +53,14 @@ export async function GET(
     filer_name: string; period_of_report: string; filing_date: string;
     cusip: string; company_name: string; value_usd: number;
     shares: number; investment_discretion: string | null; put_call: string | null;
+  };
+  type ThirteenDGRow = {
+    id: number; accession_no: string; filer_name: string; filer_cik: string | null;
+    subject_company_name: string; subject_company_ticker: string | null;
+    subject_company_cik: string | null; filing_date: string; filed_at: string;
+    percent_of_class: number | null; aggregate_amount: number | null;
+    amendment_type: string | null; item4_excerpt: string | null;
+    primary_doc_url: string | null; created_at: string;
   };
   type DbResult<T> = { data: T[] | null; error: { message: string } | null };
 
@@ -128,6 +138,55 @@ export async function GET(
       (company.ticker && holdingName.includes(company.ticker.toUpperCase()))
     );
   });
+
+  // Fetch 13D/13G activist filings for this ticker
+  const { data: thirteenDGs, error: thirteenDGErr } = await supabase
+    .from("thirteen_dg_filings")
+    .select("id, accession_no, filer_name, filer_cik, subject_company_name, subject_company_ticker, subject_company_cik, filing_date, filed_at, percent_of_class, aggregate_amount, amendment_type, item4_excerpt, primary_doc_url, created_at")
+    .ilike("subject_company_ticker", tickerUpper)
+    .order("filing_date", { ascending: false })
+    .limit(200) as DbResult<ThirteenDGRow>;
+
+  if (thirteenDGErr) return errorJson("Failed to query 13D/13G filings", thirteenDGErr.message, 500);
+
+  // Fetch annual filings (10-Q/10-K MD&A excerpts)
+  type AnnualFilingRow = {
+    id: number; ticker: string; form_type: string; filing_date: string;
+    period_of_report: string | null; primary_doc_url: string | null;
+    mda_excerpt: string;
+  };
+  const { data: annualFilings, error: annualErr } = await supabase
+    .from("annual_filings")
+    .select("id, ticker, form_type, filing_date, period_of_report, primary_doc_url, mda_excerpt")
+    .ilike("ticker", tickerUpper)
+    .order("filing_date", { ascending: false })
+    .limit(20) as DbResult<AnnualFilingRow>;
+
+  if (annualErr) return errorJson("Failed to query annual filings", annualErr.message, 500);
+
+  // Fetch fundamentals from cache
+  type FundamentalsRow = {
+    ticker: string;
+    data: {
+      trailingPE: number | null;
+      revenueGrowth: number | null;
+      grossMargins: number | null;
+      totalCash: number | null;
+      debtToEquity: number | null;
+      fetchedAt: string;
+    };
+    fetched_at: string;
+  };
+  const { data: fundRows } = await supabase
+    .from("fundamentals_cache")
+    .select("ticker, data, fetched_at")
+    .eq("ticker", tickerUpper)
+    .limit(1) as DbResult<FundamentalsRow>;
+
+  const fundamentalsData = fundRows?.[0]?.data ?? null;
+
+  // Fetch short interest in parallel-ish (non-blocking)
+  const shortInterestData = await fetchShortInterest(tickerUpper);
 
   // ── Fetch cached summaries ──
   const filingUrls = [...new Set((txns ?? []).map((t) => t.filing_url))];
@@ -244,15 +303,70 @@ export async function GET(
     thirteenFHoldings: matchedThirteenFs.map((h) => ({
       id: h.id,
       accessionNo: h.accession_no,
+      filerName: h.filer_name,
       periodOfReport: h.period_of_report,
       filingDate: h.filing_date,
       cusip: h.cusip,
       companyName: h.company_name,
       valueUsd: h.value_usd,
       shares: h.shares,
+      investmentDiscretion: h.investment_discretion,
       putCall: h.put_call,
     })),
+    thirteenDGFilings: (thirteenDGs ?? []).map((f) => ({
+      id: f.id,
+      accessionNo: f.accession_no,
+      filerName: f.filer_name,
+      filerCik: f.filer_cik,
+      subjectCompanyName: f.subject_company_name,
+      subjectCompanyTicker: f.subject_company_ticker,
+      subjectCompanyCik: f.subject_company_cik,
+      filingDate: f.filing_date,
+      filedAt: f.filed_at,
+      percentOfClass: f.percent_of_class,
+      aggregateAmount: f.aggregate_amount,
+      amendmentType: f.amendment_type,
+      item4Excerpt: f.item4_excerpt,
+      primaryDocUrl: f.primary_doc_url,
+    })),
+    annualFilings: (annualFilings ?? []).map((af) => ({
+      id: af.id,
+      formType: af.form_type,
+      filingDate: af.filing_date,
+      periodOfReport: af.period_of_report,
+      primaryDocUrl: af.primary_doc_url,
+      mdaExcerpt: af.mda_excerpt,
+    })),
   };
+
+  // ── Compute signal score ──
+  // Convert DB transactions to ParsedForm4Transaction shape for scoring
+  const scoringTxns: ParsedForm4Transaction[] = [];
+  for (const ins of insidersWithTxns) {
+    for (const t of ins.transactions) {
+      scoringTxns.push({
+        officerName: ins.name,
+        officerTitle: ins.title ?? "",
+        transactionType: t.transactionType as ParsedForm4Transaction["transactionType"],
+        transactionCode: t.transactionCode ?? "",
+        sharesTraded: t.shares,
+        pricePerShare: t.pricePerShare,
+        totalValue: t.totalValue,
+        sharesOwnedAfter: t.sharesOwnedAfter,
+        transactionDate: t.transactionDate,
+        isDirectOwnership: t.isDirectOwnership,
+      });
+    }
+  }
+
+  let signalScore = null;
+  try {
+    if (company.ticker && scoringTxns.length > 0) {
+      signalScore = await scoreSignal(company.ticker, scoringTxns);
+    }
+  } catch {
+    // Signal scoring failure is non-fatal
+  }
 
   // Build summaries dict
   const summaries: Record<string, {
@@ -275,5 +389,11 @@ export async function GET(
     };
   }
 
-  return NextResponse.json({ company: result, summaries });
+  return NextResponse.json({
+    company: result,
+    summaries,
+    fundamentals: fundamentalsData,
+    shortInterest: shortInterestData,
+    signalScore,
+  });
 }

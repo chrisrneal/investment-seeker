@@ -121,11 +121,18 @@ GET /api/companies?limit=50
 
 ### GET /api/companies/[ticker]
 
-**Requires authentication.** Returns a single company by ticker symbol with its insiders, transactions, 8-K events, 13F holdings, and cached AI summaries. Returns `404` if the ticker is not found.
+**Requires authentication.** Returns a single company by ticker symbol with its insiders, transactions, 8-K events, 13F holdings (with filer name and investment discretion), 13D/G activist filings, annual filings (10-Q/10-K MD&A excerpts), cached AI summaries, fundamentals (from cache), short interest, and a computed insider signal score (0–100). Returns `404` if the ticker is not found.
 
 ```
 GET /api/companies/AAPL
 ```
+
+The response includes:
+- `company` — full company data with nested insiders, transactions, 8-K events, 13F holdings, 13D/G filings, and annual filings
+- `summaries` — cached AI summaries keyed by filing URL
+- `fundamentals` — cached Yahoo Finance metrics (P/E, revenue growth, gross margins, cash, D/E) or null
+- `shortInterest` — short % of float and days to cover from Yahoo Finance, or null
+- `signalScore` — computed 0–100 insider conviction score with breakdown and rationale, or null
 
 ### GET /api/summarize
 

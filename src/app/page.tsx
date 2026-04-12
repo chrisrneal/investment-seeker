@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, Suspense, useEffect, useState, useRef, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import type { FilingSummary } from "@/lib/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -60,6 +60,7 @@ type Company = {
   insiders: Insider[];
   eightKEvents?: EightKEvent[];
   thirteenFHoldings?: ThirteenFHolding[];
+  shortInterest?: { shortPercentOfFloat: number | null; shortRatio: number | null } | null;
 };
 
 type JobStep = {
@@ -144,6 +145,13 @@ const impactText: Record<string, string> = {
   Mixed: "#ffd080",
   Neutral: "#9aa4ad",
 };
+
+function shortInterestBadgeStyle(pct: number): React.CSSProperties {
+  // pct is a fraction (e.g. 0.043 = 4.3%)
+  if (pct < 0.05) return { ...badge("#0d2d1a"), color: "#6ecf8a" };
+  if (pct <= 0.20) return { ...badge("#2a1f00"), color: "#ffd080" };
+  return { ...badge("#2d0d0d"), color: "#ff8a8a" };
+}
 
 // ── Lightweight Markdown renderer ──────────────────────────────────
 
@@ -638,6 +646,7 @@ export default function Home() {
 }
 
 function HomeContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [routeError, setRouteError] = useState("");
 
@@ -743,10 +752,11 @@ function HomeContent() {
             const totalFetched = (r?.totalFilingsFetched as number) ?? -1;
 
             if (tickerSearched && totalFetched === 0) {
-              // Ticker-specific search found nothing
+              // Ticker-specific search found nothing — show warning, don't navigate
               setIngestError(
                 `No filings found for "${tickerSearched}" in the last 30 days. Check the ticker symbol and try again.`,
               );
+              setTimeout(() => setJob(null), 4000);
             } else {
               const parts: string[] = [];
               if (r?.transactions) parts.push(`${r.transactions} insider txns`);
@@ -762,6 +772,10 @@ function HomeContent() {
                   (failTotal ? ` (${failTotal} failed to parse)` : ""),
               );
               loadCompanies();
+              // Navigate to the company page after a ticker-specific ingest
+              if (tickerSearched) {
+                setTimeout(() => router.push(`/company/${tickerSearched}`), 400);
+              }
             }
             setTimeout(() => setJob(null), 4000);
           } else if (data.status === "failed") {
@@ -774,7 +788,7 @@ function HomeContent() {
         }
       }, 1000);
     },
-    [stopPolling],
+    [stopPolling, router],
   );
 
   useEffect(() => {
@@ -1384,6 +1398,18 @@ function HomeContent() {
                   {thirteenFHoldingsCount > 0 && (
                     <span style={badge("#1e2832")}>
                       {thirteenFHoldingsCount} 13F
+                    </span>
+                  )}
+                  {company.shortInterest?.shortPercentOfFloat != null && (
+                    <span
+                      style={shortInterestBadgeStyle(company.shortInterest.shortPercentOfFloat)}
+                      title={
+                        company.shortInterest.shortRatio != null
+                          ? `Short ratio: ${company.shortInterest.shortRatio.toFixed(1)} days to cover`
+                          : "Short interest"
+                      }
+                    >
+                      SI {(company.shortInterest.shortPercentOfFloat * 100).toFixed(1)}%
                     </span>
                   )}
                   <span style={{ color: "#7a8a9a", fontSize: 18 }}>

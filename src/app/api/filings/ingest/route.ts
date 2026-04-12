@@ -1,8 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchAllFilings, secFetch, type FilingResult } from "@/lib/sec";
+import {
+  searchAllFilings,
+  searchFilings,
+  secFetch,
+  fetchAnnualFilingDoc,
+  fetchAnnualFilings,
+  type FilingResult,
+  type AnnualFilingResult,
+} from "@/lib/sec";
 import { parseForm4 } from "@/lib/parseForm4";
 import { parse8K } from "@/lib/parse8K";
 import { parse13F } from "@/lib/parse13F";
+import { parse13DG } from "@/lib/parse13DG";
 import { getSupabaseClient } from "@/lib/supabase";
 import {
   createJob,
@@ -153,7 +162,112 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
     return;
   }
 
-  // ── Parse ownership filings (Step 5) ──────────────────────────
+  // Step 5: Fetch 13D filings
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
+  advanceStep(jobId);
+
+  let thirteenDResults: FilingResult[] = [];
+  try {
+    thirteenDResults = await searchAllFilings({
+      formType: "SC 13D",
+      ticker,
+      startDate,
+      endDate,
+      maxResults: 500,
+    });
+    updateProgress(jobId, thirteenDResults.length, thirteenDResults.length, `Found ${thirteenDResults.length} SC 13D filings`);
+  } catch (err) {
+    updateProgress(jobId, 0, 1, `13D fetch error: ${err instanceof Error ? err.message : "Unknown error"}`);
+  }
+
+  // Step 6: Fetch 13G filings
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
+  advanceStep(jobId);
+
+  let thirteenGResults: FilingResult[] = [];
+  try {
+    thirteenGResults = await searchAllFilings({
+      formType: "SC 13G",
+      ticker,
+      startDate,
+      endDate,
+      maxResults: 500,
+    });
+    updateProgress(jobId, thirteenGResults.length, thirteenGResults.length, `Found ${thirteenGResults.length} SC 13G filings`);
+  } catch (err) {
+    updateProgress(jobId, 0, 1, `13G fetch error: ${err instanceof Error ? err.message : "Unknown error"}`);
+  }
+
+  // ── Fetch + parse annual filings (Step 8) ────────────────────
+  // When a ticker is given, retrieve the last 4 10-Q and 2 10-K filings.
+  // For broad ingests, search within a 1-year window (capped at 50 results).
+
+  if (isCancelled(jobId)) { applyCancellation(jobId); return; }
+  advanceStep(jobId);
+
+  const annualRows: {
+    ticker: string;
+    form_type: string;
+    filing_date: string;
+    period_of_report: string | null;
+    primary_doc_url: string | null;
+    mda_excerpt: string;
+  }[] = [];
+  let annualFailed = 0;
+
+  try {
+    let annualResults: AnnualFilingResult[];
+
+    if (ticker) {
+      annualResults = await fetchAnnualFilings(ticker);
+    } else {
+      // Broad ingest: search for recent 10-Q/10-K filings in a 1-year window.
+      const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      const [qFilings, kFilings] = await Promise.all([
+        searchFilings({ formType: "10-Q", startDate: oneYearAgo, endDate, pageSize: 25 })
+          .then((r) => r.results)
+          .catch(() => [] as FilingResult[]),
+        searchFilings({ formType: "10-K", startDate: oneYearAgo, endDate, pageSize: 25 })
+          .then((r) => r.results)
+          .catch(() => [] as FilingResult[]),
+      ]);
+
+      annualResults = [];
+      for (const f of [...qFilings, ...kFilings]) {
+        if (isCancelled(jobId)) { applyCancellation(jobId); return; }
+        const tkr = f.ticker ?? "";
+        if (!tkr) { annualFailed++; continue; }
+        annualResults.push(await fetchAnnualFilingDoc(f, tkr));
+      }
+    }
+
+    for (const r of annualResults) {
+      if (!r.ticker) { annualFailed++; continue; }
+      annualRows.push({
+        ticker: r.ticker,
+        form_type: r.formType,
+        filing_date: r.filingDate,
+        period_of_report: r.periodOfReport || null,
+        primary_doc_url: r.primaryDocUrl,
+        mda_excerpt: r.mdaExcerpt,
+      });
+    }
+
+    updateProgress(
+      jobId,
+      annualRows.length,
+      annualRows.length + annualFailed,
+      `Parsed ${annualRows.length} annual filings`,
+    );
+  } catch (err) {
+    // Non-fatal — log and continue.
+    annualFailed++;
+    updateProgress(jobId, 0, 1, `Annual filings fetch error: ${err instanceof Error ? err.message : "Unknown error"}`);
+  }
+
+  // ── Parse ownership filings (Step 9) ──────────────────────────
 
   advanceStep(jobId, `0 / ${ownershipResults.length} filings`);
 
@@ -260,7 +374,7 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
     updateProgress(jobId, i + 1, ownershipResults.length);
   }
 
-  // ── Parse 8-K filings (Step 6) ───────────────────────────────
+  // ── Parse 8-K filings (Step 10) ──────────────────────────────
 
   advanceStep(jobId, `0 / ${eightKResults.length} filings`);
 
@@ -305,7 +419,7 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
     updateProgress(jobId, i + 1, eightKResults.length);
   }
 
-  // ── Parse 13F-HR filings (Step 7) ────────────────────────────
+  // ── Parse 13F-HR filings (Step 11) ───────────────────────────
 
   advanceStep(jobId, `0 / ${thirteenFResults.length} filings`);
 
@@ -368,13 +482,68 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
     updateProgress(jobId, i + 1, thirteenFResults.length);
   }
 
-  // ── Save to database (Step 8) ────────────────────────────────
+  // ── Parse 13D/G filings (Step 12) ────────────────────────────
+
+  advanceStep(jobId, `0 / ${thirteenDResults.length + thirteenGResults.length} filings`);
+
+  type ThirteenDGRow = {
+    accession_no: string;
+    filer_name: string;
+    filer_cik: string | null;
+    subject_company_name: string;
+    subject_company_ticker: string | null;
+    subject_company_cik: string | null;
+    filing_date: string;
+    percent_of_class: number | null;
+    aggregate_amount: number | null;
+    amendment_type: string | null;
+    item4_excerpt: string | null;
+    primary_doc_url: string | null;
+  };
+
+  const thirteenDGRows: ThirteenDGRow[] = [];
+  let thirteenDGFailed = 0;
+  const allDGFilings = [...thirteenDResults, ...thirteenGResults];
+
+  for (let i = 0; i < allDGFilings.length; i++) {
+    if (isCancelled(jobId)) { applyCancellation(jobId); return; }
+    const f = allDGFilings[i];
+    try {
+      const parsed = await parse13DG(f.link, {
+        filerName: f.filerName,
+        filerCik: f.cik,
+        accessionNo: f.accessionNo,
+        filingDate: f.filingDate,
+        filingType: f.filingType,
+        subjectTicker: f.ticker,
+      });
+      thirteenDGRows.push({
+        accession_no: parsed.accessionNo,
+        filer_name: parsed.filerName,
+        filer_cik: parsed.filerCik,
+        subject_company_name: parsed.subjectCompanyName,
+        subject_company_ticker: parsed.subjectCompanyTicker,
+        subject_company_cik: parsed.subjectCompanyCik,
+        filing_date: parsed.filingDate,
+        percent_of_class: parsed.percentOfClass,
+        aggregate_amount: parsed.aggregateAmount,
+        amendment_type: parsed.amendmentType,
+        item4_excerpt: parsed.item4Excerpt,
+        primary_doc_url: parsed.primaryDocUrl,
+      });
+    } catch {
+      thirteenDGFailed++;
+    }
+    updateProgress(jobId, i + 1, allDGFilings.length);
+  }
+
+  // ── Save to database (Step 13) ────────────────────────────────
 
   if (isCancelled(jobId)) { applyCancellation(jobId); return; }
   advanceStep(jobId, "Upserting companies");
   const BATCH = 500;
   let dbStep = 0;
-  const dbTotal = 7;
+  const dbTotal = 9;
 
   // Deduplicate rows that share the same conflict key — last write wins
   const deduped8K = [
@@ -474,6 +643,46 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
       }
     }
   }
+  updateProgress(jobId, ++dbStep, dbTotal, "Upserting 13D/13G filings");
+
+  const dedupedThirteenDG = [
+    ...new Map(thirteenDGRows.map((r) => [r.accession_no, r])).values(),
+  ];
+
+  if (dedupedThirteenDG.length > 0) {
+    for (let i = 0; i < dedupedThirteenDG.length; i += BATCH) {
+      const { error } = await supabase
+        .from("thirteen_dg_filings")
+        .upsert(dedupedThirteenDG.slice(i, i + BATCH), {
+          onConflict: "accession_no",
+        });
+      if (error) {
+        failJob(jobId, `Failed to upsert thirteen_dg_filings: ${error.message}`);
+        return;
+      }
+    }
+  }
+  updateProgress(jobId, ++dbStep, dbTotal, "Upserting annual filings");
+
+  const dedupedAnnual = [
+    ...new Map(
+      annualRows.map((r) => [`${r.ticker}|${r.form_type}|${r.filing_date}`, r])
+    ).values(),
+  ];
+
+  if (dedupedAnnual.length > 0) {
+    for (let i = 0; i < dedupedAnnual.length; i += BATCH) {
+      const { error } = await supabase
+        .from("annual_filings")
+        .upsert(dedupedAnnual.slice(i, i + BATCH), {
+          onConflict: "ticker,form_type,filing_date",
+        });
+      if (error) {
+        failJob(jobId, `Failed to upsert annual_filings: ${error.message}`);
+        return;
+      }
+    }
+  }
   updateProgress(jobId, ++dbStep, dbTotal, "Done");
 
   completeJob(jobId, {
@@ -487,6 +696,10 @@ async function runIngest(jobId: string, hours: number, ticker?: string) {
     eightKFailed,
     thirteenFHoldings: deduped13F.length,
     thirteenFFailed,
+    thirteenDGFilings: dedupedThirteenDG.length,
+    thirteenDGFailed,
+    annualFilings: dedupedAnnual.length,
+    annualFailed,
     totalFilingsFetched:
       ownershipResults.length + eightKResults.length + thirteenFResults.length,
   });
@@ -546,9 +759,13 @@ export async function POST(req: NextRequest) {
     `Fetching Form 5 filings${tickerLabel}`,
     `Fetching 8-K filings${tickerLabel}`,
     `Fetching 13F-HR filings${tickerLabel}`,
+    `Fetching 13D filings${tickerLabel}`,
+    `Fetching 13G filings${tickerLabel}`,
+    `Fetching annual filings (10-Q/10-K)${tickerLabel}`,
     "Parsing ownership XML",
     "Parsing 8-K filings",
     "Parsing 13F-HR filings",
+    "Parsing 13D/G filings",
     "Saving to database",
   ]);
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getAuthUser, unauthorizedResponse } from "@/lib/auth";
 import type { ApiError } from "@/lib/types";
+import { fetchShortInterest } from "@/lib/marketData";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -128,6 +129,21 @@ export async function GET(req: NextRequest) {
     .limit(2000) as DbResult<ThirteenFRow>;
 
   if (thirteenFErr) return errorJson("Failed to query 13F holdings", thirteenFErr.message, 500);
+
+  // ── Fetch short interest for all tickers in parallel ──
+  const tickersWithData = companies
+    .map((c) => c.ticker)
+    .filter((t): t is string => !!t);
+
+  const siResults = await Promise.allSettled(
+    tickersWithData.map((t) => fetchShortInterest(t))
+  );
+  const shortInterestByTicker = new Map<string, { shortPercentOfFloat: number | null; shortRatio: number | null } | null>();
+  tickersWithData.forEach((t, i) => {
+    const r = siResults[i];
+    const si = r.status === "fulfilled" ? r.value : null;
+    shortInterestByTicker.set(t, si ? { shortPercentOfFloat: si.shortPercentOfFloat, shortRatio: si.shortRatio } : null);
+  });
 
   // ── Fetch cached summaries for all filing URLs ──
   const filingUrls = [...new Set((txns ?? []).map((t) => t.filing_url))];
@@ -314,6 +330,9 @@ export async function GET(req: NextRequest) {
         shares: h.shares,
         putCall: h.put_call,
       })),
+      shortInterest: company.ticker
+        ? (shortInterestByTicker.get(company.ticker) ?? null)
+        : null,
     };
   });
 

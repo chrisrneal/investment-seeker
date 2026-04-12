@@ -39,6 +39,24 @@ export type SignalBreakdown = {
   purchaseTypeScore: number;
   relativeHoldingsScore: number;
   priceDipScore: number;
+  /** +10 bonus when short float >20% and insider buying is present. */
+  shortInterestBonus: number;
+};
+
+export type FundamentalsSnapshot = {
+  trailingPE: number | null;
+  revenueGrowth: number | null;
+  grossMargins: number | null;
+  totalCash: number | null;
+  debtToEquity: number | null;
+  /** ISO 8601 timestamp of when this snapshot was fetched. */
+  fetchedAt: string;
+};
+
+export type ShortInterest = {
+  shortPercentOfFloat: number | null;
+  shortRatio: number | null;
+  fetchedAt: string;
 };
 
 export type ScoredSignal = {
@@ -47,6 +65,8 @@ export type ScoredSignal = {
   breakdown: SignalBreakdown;
   ticker: string;
   transactionCount: number;
+  fundamentals: FundamentalsSnapshot | null;
+  shortInterest: ShortInterest | null;
 };
 
 // ── AI filing summary ──────────────────────────────────────────────
@@ -111,6 +131,43 @@ export type ParsedForm13F = {
   periodOfReport: string;
   filingDate: string;
   holdings: Form13FHolding[];
+};
+
+// ── 13D / 13G activist filing ─────────────────────────────────────
+
+export type Parsed13DG = {
+  accessionNo: string;
+  filerName: string;
+  filerCik: string | null;
+  subjectCompanyName: string;
+  subjectCompanyTicker: string | null;
+  subjectCompanyCik: string | null;
+  filingDate: string;
+  percentOfClass: number | null;
+  aggregateAmount: number | null;
+  amendmentType: string | null;
+  /** Up to 1,500 characters from Item 4 (Purpose of Transaction). */
+  item4Excerpt: string | null;
+  primaryDocUrl: string | null;
+};
+
+/** Supabase row shape for thirteen_dg_filings (snake_case). */
+export type ThirteenDGFiling = {
+  id: number;
+  accession_no: string;
+  filer_name: string;
+  filer_cik: string | null;
+  subject_company_name: string;
+  subject_company_ticker: string | null;
+  subject_company_cik: string | null;
+  filing_date: string;
+  filed_at: string;
+  percent_of_class: number | null;
+  aggregate_amount: number | null;
+  amendment_type: string | null;
+  item4_excerpt: string | null;
+  primary_doc_url: string | null;
+  created_at: string;
 };
 
 // ── API error shape ────────────────────────────────────────────────

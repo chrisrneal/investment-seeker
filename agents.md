@@ -11,6 +11,24 @@ After every development task (feature addition, bug fix, refactor, configuration
 1. **Update `readme.md`** — Reflect any new features, setup changes, dependencies, or usage instructions resulting from the work.
 2. **Update this file (`agents.md`)** — Record any new conventions, architectural decisions, project structure changes, or agent-specific context discovered during development.
 
+## Pre-PR Checklist
+
+Before opening or updating any pull request, you **must** complete all of the following steps in order:
+
+1. **Run migrations** — if any new SQL files were added to `migrations/`, apply them:
+   ```
+   npm run migrate
+   ```
+   Verify the output shows all pending migrations applied with ✅. Fix any errors before continuing.
+
+2. **Build the app** — confirm the production build compiles cleanly with no TypeScript errors:
+   ```
+   npm run build
+   ```
+   The build must complete without errors. Resolve any type errors or compilation failures before opening a PR.
+
+Only proceed to open the PR after both commands succeed.
+
 ## Documentation Update Checklist
 
 After each development task, review and update as needed:
@@ -28,8 +46,8 @@ After each development task, review and update as needed:
 - `src/app/api/filings/ingest/8k/route.ts` — Standalone `POST /api/filings/ingest/8k` endpoint (also called by the unified ingest pipeline).
 - `src/app/api/filings/ingest/13f/route.ts` — Standalone `POST /api/filings/ingest/13f` endpoint (also called by the unified ingest pipeline).
 - `src/app/api/companies/route.ts` — `GET /api/companies` endpoint. Returns companies ordered by most recent transaction, with nested insiders and their transaction history. Also joins `filing_summaries` to include any cached AI summaries keyed by filing URL in the response.
-- `src/app/api/companies/[ticker]/route.ts` — `GET /api/companies/[ticker]` endpoint. Returns a single company by ticker symbol (case-insensitive) with insiders, transactions, 8-K events, 13F holdings, and cached AI summaries. Returns 404 if ticker not found.
-- `src/app/company/[ticker]/page.tsx` — Company detail page (client component). Shows a single company's full details including insiders, transactions, 8-K events, 13F holdings, and AI summary integration. Redirects to home with error banner if ticker not found.
+- `src/app/api/companies/[ticker]/route.ts` — `GET /api/companies/[ticker]` endpoint. Returns a single company by ticker symbol (case-insensitive) with insiders, transactions, 8-K events, 13F holdings (with filer name and investment discretion), 13D/G filings, annual filings (10-Q/10-K MD&A), cached AI summaries, fundamentals (from `fundamentals_cache`), short interest (from Yahoo Finance), and a computed insider signal score (0–100 via `scoreSignal()`). Returns 404 if ticker not found.
+- `src/app/company/[ticker]/page.tsx` — Company detail page (client component). Shows a single company's full details including: signal score gauge (0–100) with breakdown, fundamentals panel (P/E, revenue growth, margins, cash, D/E), short interest (% of float, days to cover), insiders with enriched transaction table (transaction code, filing date with lag indicator, direct/indirect ownership), 8-K events (expandable excerpts), 13F holdings (with filer name and investment discretion), activist 13D/G filings, annual filings tab (10-Q/10-K MD&A excerpts), and AI summary integration. Shows 404 with helpful message if ticker not found.
 - `src/app/api/summarize/route.ts` — `GET /api/summarize` endpoint. **Requires authentication.** AI filing summarizer with two-tier model strategy (Haiku default, Sonnet for deep analysis). Verifies Supabase session via `getAuthUser()` before proceeding. Caches results in Supabase.
 - `src/app/auth/callback/route.ts` — OAuth/email confirmation callback. Exchanges the `code` query param for a Supabase session and sets cookies.
 - `src/lib/auth.ts` — Server-side auth helper. `getAuthUser(req)` verifies the Supabase session cookie and returns the `User` or `null`. `unauthorizedResponse()` returns a standard 401 JSON.
@@ -39,13 +57,16 @@ After each development task, review and update as needed:
   `https://efts.sec.gov/LATEST/search-index`.
 - `src/lib/types.ts` — shared TypeScript types for filings, transactions, scores, summaries, and API errors.
 - `src/lib/parseForm4.ts` — Ownership XML parser for Forms 3, 4, 5. Extracts issuer info, owner CIK/name/title/relationship, and structured transaction data. Flags notable transactions (open-market buys > $100K).
-- `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance.
+- `src/lib/sec.ts` — SEC EDGAR client. Also exports `fetchAnnualFilingDoc(filing, ticker)` (processes one 10-Q/10-K filing result into an `AnnualFilingResult`) and `fetchAnnualFilings(ticker)` (last 4 quarterly + 2 annual filings for a specific ticker, with MD&A extraction).
+- `src/lib/scoreSignal.ts` — Signal scoring engine. Scores insider transactions 0–100 using cluster buying, insider role, purchase type, relative holdings, and price dip signals. Fetches 52-week price context from Yahoo Finance v8 chart API and company fundamentals (trailingPE, revenueGrowth, grossMargins, totalCash, debtToEquity) from Yahoo Finance v10 quoteSummary API. Fundamentals are cached in `fundamentals_cache` with a 24-hour TTL.
 - `src/lib/anthropic.ts` — shared singleton Anthropic client instance.
 - `src/lib/supabase.ts` — shared singleton Supabase client instance.
 - `src/lib/ingestJobs.ts` — In-memory job store for tracking ingestion progress. Supports step-level tracking with sub-progress, hung detection, and TTL-based cleanup.
 - `src/lib/costs.ts` — Anthropic API cost estimator from token usage. Accounts for prompt caching discounts.
 - `scripts/migrate.ts` — Database migration runner. Reads SQL files from `migrations/`, tracks applied migrations in `_migrations` table.
 - `migrations/001_normalized_schema.sql` — Creates normalized schema: `companies`, `insiders`, `company_insiders`, `transactions`. Drops old `filings` table.
+- `migrations/006_fundamentals_cache.sql` — Creates `fundamentals_cache` table (ticker PK, data JSONB, fetched_at). Stores Yahoo Finance quoteSummary fundamentals with 24h TTL enforced in app code.
+- `migrations/007_annual_filings.sql` — Creates `annual_filings` table with columns: ticker, form_type, filing_date, period_of_report, primary_doc_url, mda_excerpt. Unique on (ticker, form_type, filing_date). Populated by the ingest pipeline.
 - `vercel.json` — Vercel deployment config.
 - `.env.example` — documents all required environment variables.
 
@@ -112,7 +133,17 @@ After each development task, review and update as needed:
 - **Signal scoring:** Five weighted signals summing to max 100. Price dip
   data comes from Yahoo Finance v8 chart API (free, no key required).
   Returns 0.5 (neutral) when price data is unavailable so the score
-  degrades gracefully.
+  degrades gracefully. Fundamentals (trailingPE, revenueGrowth, grossMargins,
+  totalCash, debtToEquity) are fetched in parallel from Yahoo Finance v10
+  quoteSummary and attached to `ScoredSignal.fundamentals`. Results are cached
+  in the `fundamentals_cache` Supabase table for 24 hours. Both the price and
+  fundamentals fetches degrade gracefully (`null`) if unavailable.
+- **FundamentalsSnapshot type:** All fundamentals fields are `number | null`
+  to handle tickers where Yahoo Finance omits certain fields. Always check for
+  null before rendering or computing with these values.
+- **Annual filings (10-Q/10-K):** The ingest pipeline step "Fetch annual filings" runs after the 13F step. With a ticker it calls `fetchAnnualFilings(ticker)` (last 4 Q + 2 K). Without a ticker it searches a 1-year window (25 Q + 25 K, capped). Results are stored in `annual_filings` via upsert on `(ticker, form_type, filing_date)`.
+- **MD&A extraction:** `extractMdaExcerpt` in `sec.ts` searches plain text for an "Item 2" header (with "Management" or "Discussion" nearby), then takes up to 3,000 characters until the next "Item 3". For 10-K filings where Item 2 isn't found, it falls back to Item 7. Last resort: first 3,000 characters of the document.
+- **10-Q/10-K filing type aliases:** `FORM_ALIASES` in `/api/filings/route.ts` maps "10-q", "10q", "10-k", "10k" to "10-Q"/"10-K" respectively, making them searchable via `GET /api/filings?type=10-q`.
 - **Shared type definitions:** All cross-module types live in
   `src/lib/types.ts`. Import from there rather than redefining types
   locally.
