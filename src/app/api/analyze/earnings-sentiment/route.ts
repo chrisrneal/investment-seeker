@@ -9,7 +9,7 @@ import type { TextBlock } from "@anthropic-ai/sdk/resources/messages.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SONNET_MODEL = "claude-sonnet-4-6-20260401";
+const SONNET_MODEL = "claude-sonnet-4-6";
 const CACHE_TTL_HOURS = 24;
 
 const SYSTEM_PROMPT =

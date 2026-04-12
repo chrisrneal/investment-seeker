@@ -2,7 +2,8 @@
 
 import { Fragment, useEffect, useState, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
-import type { FilingSummary } from "@/lib/types";
+import Link from "next/link";
+import type { FilingSummary, AIRecommendation, AdversarialDebate } from "@/lib/types";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import type { User, Session } from "@supabase/supabase-js";
 
@@ -646,6 +647,25 @@ export default function CompanyPage() {
   const [riskFlagsError, setRiskFlagsError] = useState("");
   const [expandedRiskFlag, setExpandedRiskFlag] = useState<Set<number>>(new Set());
 
+  // ── Recommendation state ───────────────────────────────────────
+  const [recommendation, setRecommendation] = useState<AIRecommendation | null>(null);
+  const [recLoading, setRecLoading] = useState(false);
+  const [recError, setRecError] = useState("");
+  const [risksExpanded, setRisksExpanded] = useState(false);
+
+  // ── Adversarial Debate state ───────────────────────────────────
+  const [debate, setDebate] = useState<AdversarialDebate | null>(null);
+  const [debateLoading, setDebateLoading] = useState(false);
+  const [debateError, setDebateError] = useState("");
+  const [debateExpanded, setDebateExpanded] = useState(false);
+
+  // ── Watchlist state ────────────────────────────────────────────
+  const [isWatching, setIsWatching] = useState(false);
+
+  // ── Export Memo state ──────────────────────────────────────────
+  const [memoLoading, setMemoLoading] = useState(false);
+  const [memoError, setMemoError] = useState("");
+
   // ── Load company data ──────────────────────────────────────────
 
   const loadCompany = useCallback(async () => {
@@ -910,6 +930,117 @@ export default function CompanyPage() {
     }
   }
 
+  // ── Recommendation fetch ───────────────────────────────────────
+
+  async function fetchRecommendation() {
+    if (recLoading) return;
+    setRecLoading(true);
+    setRecError("");
+    try {
+      const res = await fetch(`/api/signal/recommendation?ticker=${encodeURIComponent(ticker)}`);
+      const data: AIRecommendation & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Recommendation failed");
+      setRecommendation(data);
+    } catch (e) {
+      setRecError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setRecLoading(false);
+    }
+  }
+
+  // ── Adversarial debate fetch ───────────────────────────────────
+
+  async function fetchDebate() {
+    if (debateLoading) return;
+    setDebateLoading(true);
+    setDebateError("");
+    try {
+      const res = await fetch(`/api/analyze/adversarial?ticker=${encodeURIComponent(ticker)}`);
+      const data: AdversarialDebate & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Adversarial analysis failed");
+      setDebate(data);
+      setDebateExpanded(true);
+    } catch (e) {
+      setDebateError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setDebateLoading(false);
+    }
+  }
+
+  // ── Watchlist check ────────────────────────────────────────────
+
+  async function checkWatchlist() {
+    try {
+      const res = await fetch("/api/watchlist");
+      if (res.ok) {
+        const data = await res.json();
+        const found = Array.isArray(data) && data.some(
+          (e: { ticker: string }) => e.ticker === ticker.toUpperCase()
+        );
+        setIsWatching(found);
+      }
+    } catch {
+      // silent
+    }
+  }
+
+  async function toggleWatch() {
+    if (isWatching) return;
+    try {
+      const res = await fetch("/api/watchlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker: ticker.toUpperCase() }),
+      });
+      if (res.ok || res.status === 409) {
+        setIsWatching(true);
+      }
+    } catch {
+      // silent
+    }
+  }
+
+  // ── Export memo ────────────────────────────────────────────────
+
+  async function handleExportMemo() {
+    if (memoLoading) return;
+    setMemoLoading(true);
+    setMemoError("");
+    try {
+      const res = await fetch(
+        `/api/export/memo?ticker=${encodeURIComponent(ticker)}`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        const err = await res.json();
+        setMemoError(err.error ?? "Export failed");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${ticker.toUpperCase()}_research_memo_${new Date().toISOString().slice(0, 10)}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setMemoError("Network error during export");
+    } finally {
+      setMemoLoading(false);
+    }
+  }
+
+  // ── Auto-fetch recommendation + watchlist check on auth ────────
+
+  useEffect(() => {
+    if (isAuthenticated && !recommendation && !recLoading) {
+      void fetchRecommendation();
+      void checkWatchlist();
+    }
+  }, [isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Computed values ────────────────────────────────────────────
 
   const totalInsiders = company?.insiders.length ?? 0;
@@ -954,6 +1085,18 @@ export default function CompanyPage() {
             >
               ← Back
             </a>
+            <Link
+              href="/watchlist"
+              style={{
+                ...btn("#1e2832"),
+                padding: "4px 10px",
+                fontSize: 12,
+                textDecoration: "none",
+                color: "#e6e8eb",
+              }}
+            >
+              ★ Watchlist
+            </Link>
           </div>
           {loading ? (
             <h1 style={{ fontSize: 28, margin: 0 }}>Loading…</h1>
@@ -967,6 +1110,31 @@ export default function CompanyPage() {
                   </span>
                 )}
               </h1>
+              <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {isAuthenticated && (
+                  <button
+                    onClick={toggleWatch}
+                    disabled={isWatching}
+                    style={{ ...btn(isWatching ? "#1a3a2a" : "#1e2832"), padding: "4px 10px", fontSize: 12, opacity: isWatching ? 0.8 : 1 }}
+                  >
+                    {isWatching ? "✓ Watching" : "★ Watch"}
+                  </button>
+                )}
+                <button
+                  onClick={handleExportMemo}
+                  disabled={!isAuthenticated || memoLoading}
+                  title={isAuthenticated ? (memoLoading ? "Generating memo…" : "Export research memo as Word document (~15s)") : "Sign in to export"}
+                  style={{ ...btn("#1a3a2a"), fontSize: 12, padding: "4px 10px", opacity: !isAuthenticated ? 0.5 : 1 }}
+                >
+                  {memoLoading ? "⏳ Generating…" : "📄 Export Memo"}
+                </button>
+              </div>
+              {memoError && (
+                <div style={{ marginTop: 8, padding: "8px 14px", background: "#2d0d0d", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "#ff8a8a", fontSize: 13 }}>{memoError}</span>
+                  <button onClick={() => setMemoError("")} style={{ ...btn("transparent"), fontSize: 16, padding: "0 4px", color: "#ff8a8a" }}>✕</button>
+                </div>
+              )}
               <p style={{ color: "#9aa4ad", marginTop: 4 }}>
                 CIK: {company.cik}
                 {company.latestTransactionDate && (
@@ -1167,6 +1335,227 @@ export default function CompanyPage() {
       {/* ── Company Details ── */}
       {company && (
         <section style={{ ...panel, marginTop: 24 }}>
+          {/* ── Signal Card (AI Recommendation) ── */}
+          {isAuthenticated || recLoading || recommendation ? (
+            <div style={{
+              marginBottom: 16, padding: "16px 20px",
+              background: "#090e14", borderRadius: 10,
+              border: "1px solid #1e2832",
+              borderLeft: `4px solid ${
+                recommendation?.verdict.includes("Buy") ? "#2a7a4a" :
+                recommendation?.verdict.includes("Sell") ? "#7a2a2a" : "#7a7020"
+              }`,
+            }}>
+              {recLoading && !recommendation ? (
+                <div style={{ height: 120, background: "#0c1218", borderRadius: 8, opacity: 0.6 }}>
+                  <p style={{ color: "#7a8a9a", padding: 16, fontSize: 13 }}>Generating recommendation…</p>
+                </div>
+              ) : recError && !recommendation ? (
+                <p style={{ color: "#ff8a8a", fontSize: 13, margin: 0 }}>{recError}</p>
+              ) : !isAuthenticated && !recommendation ? (
+                <p style={{ color: "#9aa4ad", fontSize: 13, margin: 0 }}>Sign in to generate an AI recommendation.</p>
+              ) : recommendation ? (
+                <>
+                  {/* Header row */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{
+                      ...badge(
+                        recommendation.verdict.includes("Buy") ? "#0d2d1a" :
+                        recommendation.verdict.includes("Sell") ? "#2d0d0d" : "#2a2000"
+                      ),
+                      color: recommendation.verdict.includes("Buy") ? "#6ecf8a" :
+                        recommendation.verdict.includes("Sell") ? "#ff8a8a" : "#ffd080",
+                      fontWeight: 700, fontSize: 13, padding: "4px 14px",
+                    }}>
+                      {recommendation.verdict}
+                    </span>
+                    {/* Confidence pips */}
+                    <div style={{ display: "flex", gap: 3 }}>
+                      {[1, 2, 3, 4, 5].map((i) => (
+                        <div key={i} style={{
+                          width: 8, height: 8, borderRadius: "50%",
+                          background: i <= recommendation.confidenceLevel ? "#6ecf8a" : "#1e2832",
+                        }} />
+                      ))}
+                    </div>
+                    <div style={{ flexGrow: 1 }} />
+                    <span style={{ color: "#4a5a6a", fontSize: 11 }}>
+                      {new Date(recommendation.generatedAt).toLocaleDateString()}
+                    </span>
+                    <button
+                      onClick={() => void fetchRecommendation()}
+                      disabled={recLoading || !isAuthenticated}
+                      style={{ ...btn("#1e2832"), padding: "4px 10px", fontSize: 12, opacity: recLoading ? 0.5 : 1 }}
+                    >
+                      ↺ Refresh
+                    </button>
+                  </div>
+
+                  {/* Thesis */}
+                  <p style={{ color: "#c8d4e0", fontSize: 14, marginTop: 10, marginBottom: 0, lineHeight: 1.5 }}>
+                    {recommendation.thesis}
+                  </p>
+
+                  {/* Three-column row */}
+                  <div style={{ display: "flex", gap: 20, marginTop: 12, flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 160 }}>
+                      <div style={{ fontSize: 11, color: "#9aa4ad", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Entry Logic</div>
+                      <div style={{ color: "#e6e8eb", fontSize: 13 }}>{recommendation.entryLogic}</div>
+                    </div>
+                    <div style={{ minWidth: 140 }}>
+                      <div style={{ fontSize: 11, color: "#9aa4ad", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Position Sizing</div>
+                      <span style={{
+                        ...badge(
+                          recommendation.positionSizing === "Full" ? "#0d2d1a" :
+                          recommendation.positionSizing === "Half" ? "#2a2000" :
+                          recommendation.positionSizing === "Starter" ? "#1e2832" : "#2d0d0d"
+                        ),
+                        color: recommendation.positionSizing === "Full" ? "#6ecf8a" :
+                          recommendation.positionSizing === "Half" ? "#ffd080" :
+                          recommendation.positionSizing === "Starter" ? "#9aa4ad" : "#ff8a8a",
+                        fontWeight: 700,
+                      }}>
+                        {recommendation.positionSizing}
+                      </span>
+                      <div style={{ color: "#9aa4ad", fontSize: 12, marginTop: 4 }}>{recommendation.positionSizingRationale}</div>
+                    </div>
+                    <div style={{ minWidth: 160 }}>
+                      <div style={{ fontSize: 11, color: "#9aa4ad", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Catalysts</div>
+                      <ul style={{ margin: 0, paddingLeft: 16, color: "#c8d4e0", fontSize: 13, lineHeight: 1.6 }}>
+                        {recommendation.catalysts.map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Key Risks toggle */}
+                  <div style={{ marginTop: 10 }}>
+                    <button onClick={() => setRisksExpanded(r => !r)} style={{ ...btn("#1e2832"), fontSize: 12, padding: "4px 10px" }}>
+                      {risksExpanded ? "▴" : "▾"} Key Risks ({recommendation.keyRisks.length})
+                    </button>
+                    {risksExpanded && (
+                      <ul style={{ margin: "8px 0 0", paddingLeft: 18, color: "#ffd080", fontSize: 13 }}>
+                        {recommendation.keyRisks.map((r, i) => <li key={i}>{r}</li>)}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Signal summary chips */}
+                  <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                    <span style={badge("#1e2832")}>Score: {recommendation.signalSummary.compositeScore ?? "N/A"}/100</span>
+                    <span style={badge("#1e2832")}>
+                      Buys: {recommendation.signalSummary.insiderBuyValue > 1e6
+                        ? `$${(recommendation.signalSummary.insiderBuyValue / 1e6).toFixed(1)}M`
+                        : `$${(recommendation.signalSummary.insiderBuyValue / 1000).toFixed(0)}K`}
+                    </span>
+                    <span style={badge("#1e2832")}>Sentiment: {recommendation.signalSummary.earningsSentiment ?? "N/A"}</span>
+                    <span style={badge("#1e2832")}>Activist: {recommendation.signalSummary.activistPresent ? "✓" : "✗"}</span>
+                    <span style={{
+                      ...badge(recommendation.signalSummary.highSeverityFlagCount > 0 ? "#2d0d0d" : "#1e2832"),
+                      color: recommendation.signalSummary.highSeverityFlagCount > 0 ? "#ff8a8a" : "#e6e8eb",
+                    }}>
+                      Flags: {recommendation.signalSummary.riskFlagCount}
+                    </span>
+                  </div>
+
+                  {/* Footer */}
+                  <div style={{ color: "#4a5a6a", fontSize: 11, display: "flex", gap: 6, marginTop: 10 }}>
+                    <span>{recommendation.modelUsed}</span>
+                    <span>·</span>
+                    <span>${recommendation.estimatedCost.toFixed(6)}</span>
+                    {recommendation.cached && (
+                      <>
+                        <span>·</span>
+                        <span style={{ color: "#7cc4ff" }}>⚡ cached</span>
+                      </>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* ── Red Team Card ── */}
+          <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #1e2832" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: debateExpanded ? 14 : 0 }}>
+              <span style={{ fontSize: 11, color: "#7a8a9a", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>
+                ⚔ Red Team Analysis
+              </span>
+              {debate && (
+                <span style={{
+                  ...badge(debate.debateVerdict === "Bull wins" ? "#0d2d1a" : debate.debateVerdict === "Bear wins" ? "#2d0d0d" : "#2a2000"),
+                  color: debate.debateVerdict === "Bull wins" ? "#6ecf8a" : debate.debateVerdict === "Bear wins" ? "#ff8a8a" : "#ffd080",
+                  fontWeight: 700, fontSize: 11,
+                }}>
+                  {debate.debateVerdict}
+                </span>
+              )}
+              <button
+                onClick={() => debate ? setDebateExpanded(e => !e) : isAuthenticated ? void fetchDebate() : undefined}
+                disabled={debateLoading || !isAuthenticated}
+                title={isAuthenticated ? (debate ? "Toggle red team panel" : "Run adversarial analysis (2 AI calls ~$0.02)") : "Sign in to use AI features"}
+                style={{ ...btn("#1a2a3a"), padding: "4px 12px", fontSize: 12, marginLeft: "auto", opacity: !isAuthenticated ? 0.5 : 1 }}
+              >
+                {debateLoading ? "Analyzing…" : debate ? (debateExpanded ? "▴ Collapse" : "▾ Expand") : "⚔ Run Analysis"}
+              </button>
+            </div>
+            {debateError && <p style={{ color: "#ff8a8a", fontSize: 13, margin: 0 }}>{debateError}</p>}
+            {!isAuthenticated && !debate && (
+              <p style={{ color: "#9aa4ad", fontSize: 12, margin: 0 }}>Sign in to run adversarial validation.</p>
+            )}
+            {isAuthenticated && !debate && !debateLoading && (
+              <p style={{ color: "#4a5a6a", fontSize: 12, margin: 0 }}>
+                Runs two sequential Claude Sonnet calls — bear case then bull rebuttal. Estimated cost ~$0.02.
+              </p>
+            )}
+            {debate && debateExpanded && (() => {
+              const { bearCase, bullRebuttal, debateVerdict, debateVerdictRationale, modelUsed: mu, estimatedCost: ec, cached: dc } = debate;
+              return (
+                <div>
+                  {/* Two-column debate layout */}
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    {/* Bear case — left column */}
+                    <div style={{ flex: 1, minWidth: 260, padding: "12px 14px", background: "#1a0808", borderRadius: 8, border: "1px solid #3a1a1a" }}>
+                      <div style={{ fontSize: 11, color: "#ff8a8a", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Bear Case</div>
+                      <p style={{ color: "#e6e8eb", fontSize: 13, margin: "0 0 10px" }}>{bearCase.coreArgument}</p>
+                      <div style={{ fontSize: 11, color: "#ff8a8a", marginBottom: 4 }}>Fragile assumptions</div>
+                      <ul style={{ margin: "0 0 10px", paddingLeft: 16, color: "#ffd080", fontSize: 12 }}>
+                        {bearCase.fragileAssumptions.map((a, i) => <li key={i}>{a}</li>)}
+                      </ul>
+                      <div style={{ padding: "8px 10px", background: "#2d0d0d", borderLeft: "3px solid #7a2a2a", borderRadius: 4 }}>
+                        <div style={{ fontSize: 11, color: "#ff8a8a", marginBottom: 3 }}>Most likely failure mode</div>
+                        <p style={{ color: "#e6e8eb", fontSize: 12, margin: 0 }}>{bearCase.likelyFailureMode}</p>
+                      </div>
+                    </div>
+                    {/* Bull rebuttal — right column */}
+                    <div style={{ flex: 1, minWidth: 260, padding: "12px 14px", background: "#081a0d", borderRadius: 8, border: "1px solid #1a3a1a" }}>
+                      <div style={{ fontSize: 11, color: "#6ecf8a", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Bull Rebuttal</div>
+                      <p style={{ color: "#e6e8eb", fontSize: 13, margin: "0 0 10px" }}>{bullRebuttal.coreCounter}</p>
+                      <div style={{ fontSize: 11, color: "#6ecf8a", marginBottom: 4 }}>Bear{"'"}s weaknesses</div>
+                      <ul style={{ margin: "0 0 10px", paddingLeft: 16, color: "#9addb0", fontSize: 12 }}>
+                        {bullRebuttal.bearCaseWeaknesses.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                      <div style={{ padding: "8px 10px", background: "#0d2d1a", borderLeft: "3px solid #1a5a3a", borderRadius: 4 }}>
+                        <div style={{ fontSize: 11, color: "#6ecf8a", marginBottom: 3 }}>Asymmetry argument</div>
+                        <p style={{ color: "#e6e8eb", fontSize: 12, margin: 0 }}>{bullRebuttal.asymmetryArgument}</p>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Verdict bar */}
+                  <div style={{ marginTop: 12, padding: "8px 12px", background: "#0c1218", borderRadius: 6, display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 11, color: "#7a8a9a" }}>Verdict:</span>
+                    <span style={{ color: debateVerdict === "Bull wins" ? "#6ecf8a" : debateVerdict === "Bear wins" ? "#ff8a8a" : "#ffd080", fontWeight: 700, fontSize: 13 }}>{debateVerdict}</span>
+                    <span style={{ color: "#9aa4ad", fontSize: 12 }}>— {debateVerdictRationale}</span>
+                  </div>
+                  {/* Footer */}
+                  <div style={{ color: "#4a5a6a", fontSize: 11, display: "flex", gap: 6, marginTop: 8 }}>
+                    <span>{mu}</span><span>·</span><span>${ec.toFixed(6)}</span>
+                    {dc && <><span>·</span><span style={{ color: "#7cc4ff" }}>⚡ cached</span></>}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
           {/* Stats row */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
             <span style={badge("#1e2832")}>

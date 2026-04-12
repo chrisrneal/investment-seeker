@@ -1078,48 +1078,62 @@ function HomeContent() {
             Track insider transactions by company. See who&rsquo;s buying and selling.
           </p>
         </div>
-        {/* ── Auth Bar ── */}
-        {!authLoading && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            {user ? (
-              <>
-                <span style={{ color: "#9aa4ad", fontSize: 13 }}>{user.email}</span>
-                <button onClick={handleLogout} style={{ ...btn("#2e3a4a"), padding: "6px 12px", fontSize: 12 }}>
-                  Sign Out
-                </button>
-              </>
-            ) : (
-              <form onSubmit={handleAuth} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  required
-                  style={{
-                    padding: "6px 10px", borderRadius: 6, border: "1px solid #2a3a4a",
-                    background: "#0e151d", color: "#e6e8eb", fontSize: 13, width: 160,
-                  }}
-                />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  required
-                  minLength={6}
-                  style={{
-                    padding: "6px 10px", borderRadius: 6, border: "1px solid #2a3a4a",
-                    background: "#0e151d", color: "#e6e8eb", fontSize: 13, width: 130,
-                  }}
-                />
-                <button type="submit" style={{ ...btn("#1a6dd4"), padding: "6px 12px", fontSize: 12 }}>
-                  Sign In
-                </button>
-              </form>
-            )}
-          </div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+          <Link
+            href="/watchlist"
+            style={{
+              ...btn("#1e2832"),
+              padding: "6px 12px",
+              fontSize: 12,
+              textDecoration: "none",
+              color: "#e6e8eb",
+            }}
+          >
+            ★ Watchlist
+          </Link>
+          {/* ── Auth Bar ── */}
+          {!authLoading && (
+            <>
+              {user ? (
+                <>
+                  <span style={{ color: "#9aa4ad", fontSize: 13 }}>{user.email}</span>
+                  <button onClick={handleLogout} style={{ ...btn("#2e3a4a"), padding: "6px 12px", fontSize: 12 }}>
+                    Sign Out
+                  </button>
+                </>
+              ) : (
+                <form onSubmit={handleAuth} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    required
+                    style={{
+                      padding: "6px 10px", borderRadius: 6, border: "1px solid #2a3a4a",
+                      background: "#0e151d", color: "#e6e8eb", fontSize: 13, width: 160,
+                    }}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    style={{
+                      padding: "6px 10px", borderRadius: 6, border: "1px solid #2a3a4a",
+                      background: "#0e151d", color: "#e6e8eb", fontSize: 13, width: 130,
+                    }}
+                  />
+                  <button type="submit" style={{ ...btn("#1a6dd4"), padding: "6px 12px", fontSize: 12 }}>
+                    Sign In
+                  </button>
+                </form>
+              )}
+            </>
+          )}
+        </div>
       </div>
       {authError && <p style={{ color: "#ff8a8a", fontSize: 13, margin: "6px 0 0" }}>{authError}</p>}
 

@@ -268,6 +268,107 @@ GET /api/analyze/activist?ticker=AAPL
 
 Thesis categories: `Operational Improvement`, `Board Reconstitution`, `Strategic Sale / M&A`, `Capital Return / Buyback`, `Management Change`, `Business Separation / Spin-off`, `Balance Sheet Restructuring`, `Undervaluation / Passive Accumulation`.
 
+### GET /api/signal/recommendation
+
+**Requires authentication.** AI-powered buy/hold/sell recommendation engine using Claude Sonnet. Assembles all cached signal data (composite score, earnings sentiment, risk flags, activist analysis, recent transactions) into a structured context, then generates a recommendation with confidence level, thesis, position sizing, and risk assessment. Cached for 6 hours.
+
+```
+GET /api/signal/recommendation?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "verdict": "BUY",
+  "confidenceLevel": 4,
+  "thesis": "Strong insider buying cluster with improving fundamentals...",
+  "timeHorizon": "6-12 months",
+  "positionSizing": {
+    "suggestedAllocationPercent": 5,
+    "rationale": "High conviction signal with moderate risk profile"
+  },
+  "risks": ["Revenue concentration risk", "Elevated valuation"],
+  "catalysts": ["Upcoming earnings report", "Insider cluster buying"],
+  "signalSummary": {
+    "compositeScore": 72,
+    "insiderConviction": 85,
+    "sentimentDelta": "improving",
+    "riskLevel": "medium",
+    "activistPresent": false
+  },
+  "modelUsed": "claude-sonnet-4-6-20260401",
+  "estimatedCost": 0.001234,
+  "cached": false
+}
+```
+
+Verdicts: `STRONG_BUY`, `BUY`, `HOLD`, `SELL`, `STRONG_SELL`. Confidence: 1–5 (5 = highest).
+
+### GET /api/analyze/adversarial
+
+**Requires authentication.** Adversarial bear/bull Red-Team debate using two sequential Claude Sonnet calls. The bear analyst argues against the position, then the bull analyst rebuts. Debate verdict is determined algorithmically based on the existing recommendation. Cached for 12 hours.
+
+```
+GET /api/analyze/adversarial?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "bearCase": {
+    "keyRisks": ["Valuation premium unsustainable", "Services growth slowing"],
+    "worstCaseScenario": "Multiple compression to 20x PE = 30% downside",
+    "failureMode": "Growth deceleration below market expectations",
+    "probabilityOfLoss": 25
+  },
+  "bullRebuttal": {
+    "counterArguments": ["Installed base of 2B+ devices provides recurring revenue"],
+    "mitigatingFactors": ["$100B+ cash position", "Strong buyback program"],
+    "upside": "AI integration drives new product cycle → 25% upside"
+  },
+  "debateVerdict": "bull_wins",
+  "debateVerdictRationale": "Bull case more persuasive given ...",
+  "modelUsed": "claude-sonnet-4-6-20260401",
+  "estimatedCost": 0.002100,
+  "cached": false
+}
+```
+
+### GET/POST/DELETE/PATCH /api/watchlist
+
+**Requires authentication.** CRUD operations for the user's watchlist.
+
+```
+GET    /api/watchlist                          # list all entries
+POST   /api/watchlist   { "ticker": "AAPL", "alertThreshold": 70 }
+DELETE /api/watchlist    { "ticker": "AAPL" }
+PATCH  /api/watchlist    { "ticker": "AAPL", "alertThreshold": 80 }
+```
+
+Each entry tracks: ticker, alert threshold (0–100), current composite score, whether the alert has been triggered, and timestamps.
+
+### POST /api/watchlist/refresh
+
+**Requires authentication.** Refreshes composite scores for all watchlist entries (max 10) from the `composite_score_cache` table. Does not call external APIs — only reads cached data. Updates `current_score`, `alert_triggered`, and `last_checked_at`.
+
+```
+POST /api/watchlist/refresh
+```
+
+### POST /api/export/memo
+
+**Requires authentication.** Generates a `.docx` research memo for a ticker. Uses Claude Sonnet to produce structured memo sections (Executive Summary, Signal Summary, Risk Assessment, Investment Thesis, Recommendation), then builds a Word document with the `docx` library. Returns the binary file directly.
+
+```
+POST /api/export/memo?ticker=AAPL
+```
+
+Response: `application/vnd.openxmlformats-officedocument.wordprocessingml.document` binary with `Content-Disposition: attachment`.
+
 ### GET /api/summarize
 
 **Requires authentication.** AI-powered filing summarizer using the Anthropic API with a two-tier model strategy. Returns `401` if the request has no valid Supabase session.
@@ -301,12 +402,12 @@ Summaries are cached in Supabase. Subsequent requests for the same filing URL re
 
 ## Authentication
 
-All AI features (filing summarization, composite scoring, earnings sentiment, risk flags, activist analysis) are gated behind Supabase Auth. Users must sign in via email/password from the top-right of the page. The auth flow:
+All AI features (filing summarization, composite scoring, earnings sentiment, risk flags, activist analysis, recommendations, adversarial debate, memo export) are gated behind Supabase Auth. Users must sign in via email/password from the top-right of the page. The auth flow:
 
 1. **Client-side** — `@supabase/ssr` browser client manages sessions via cookies. Sign-in/sign-up forms are inline in the page header.
 2. **Server-side** — `/api/summarize` verifies the session cookie using `getAuthUser()` from `src/lib/auth.ts`. Unauthenticated requests get a `401`.
 3. **OAuth callback** — `/auth/callback` handles the code exchange for email confirmation links.
-4. **UI gating** — All AI buttons (▾ AI, 🔬, ✦ Summarize All, ✦ Compute Composite Score, ✦ Analyze Earnings Sentiment, ✦ Scan for Risk Flags, ✦ Analyze Activist Thesis) are disabled and dimmed when not signed in.
+4. **UI gating** — All AI buttons (▾ AI, 🔬, ✦ Summarize All, ✦ Compute Composite Score, ✦ Analyze Earnings Sentiment, ✦ Scan for Risk Flags, ✦ Analyze Activist Thesis, AI Recommendation, Red Team, Watch, Export Memo) are disabled and dimmed when not signed in.
 
 To enable auth, you need `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in your environment. In the Supabase dashboard, enable Email auth under Authentication → Providers.
 
@@ -516,6 +617,35 @@ create table composite_score_cache   (ticker text unique, total numeric, breakdo
 create table earnings_sentiment_cache(ticker text unique, result jsonb, computed_at timestamptz);
 create table activist_analysis_cache (ticker text unique, result jsonb, computed_at timestamptz);
 create table risk_flag_cache         (ticker text unique, result jsonb, computed_at timestamptz);
+
+-- Tier 3: AI recommendation cache (6h TTL)
+create table recommendation_cache (
+  id bigint generated always as identity primary key,
+  ticker text not null unique,
+  result jsonb not null,
+  computed_at timestamptz not null default now()
+);
+
+-- Tier 3: Per-user watchlist with score-threshold alerts
+create table watchlist (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  ticker text not null,
+  alert_threshold integer not null default 70 check (alert_threshold between 0 and 100),
+  current_score integer,
+  alert_triggered boolean not null default false,
+  last_checked_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (user_id, ticker)
+);
+
+-- Tier 3: Adversarial debate cache (12h TTL)
+create table adversarial_cache (
+  id bigint generated always as identity primary key,
+  ticker text not null unique,
+  result jsonb not null,
+  computed_at timestamptz not null default now()
+);
 ```
 
 Open <http://localhost:3000>.
@@ -551,12 +681,18 @@ src/
         annual/route.ts       # POST /api/filings/annual (10-Q/10-K ingest)
       signal/
         composite/route.ts    # GET /api/signal/composite
+        recommendation/route.ts # GET /api/signal/recommendation
       analyze/
+        adversarial/route.ts  # GET /api/analyze/adversarial
         activist/route.ts     # GET /api/analyze/activist
         earnings-sentiment/route.ts  # GET /api/analyze/earnings-sentiment
         risk-flags/route.ts   # GET /api/analyze/risk-flags
       summarize/route.ts      # GET /api/summarize
+      watchlist/route.ts      # GET/POST/DELETE/PATCH /api/watchlist
+      watchlist/refresh/route.ts # POST /api/watchlist/refresh
+      export/memo/route.ts    # POST /api/export/memo
     company/[ticker]/page.tsx # company detail page (client component)
+    watchlist/page.tsx        # watchlist management page
     layout.tsx
     page.tsx                  # company-centric insider tracking UI
   lib/
@@ -576,6 +712,8 @@ src/
     sec.ts                    # rate-limited EDGAR fetch + search + annual filings
     supabase.ts               # shared Supabase client (service role)
     supabase-browser.ts       # browser Supabase client (anon key)
+    assembleSignalContext.ts   # shared signal context builder for AI features
+    generateMemoContent.ts    # memo section generator via Claude Sonnet
     types.ts                  # shared TypeScript type definitions
 scripts/
   migrate.ts                  # database migration runner
@@ -591,4 +729,7 @@ migrations/
   009_redesign_thirteen_dg_filings.sql  # schema redesign
   010_ai_analysis_caches.sql  # composite_score_cache, earnings_sentiment_cache,
                               # activist_analysis_cache, risk_flag_cache
+  011_recommendation_cache.sql # recommendation_cache table
+  012_watchlist.sql            # watchlist table with RLS
+  013_adversarial_cache.sql    # adversarial_cache table
 ```

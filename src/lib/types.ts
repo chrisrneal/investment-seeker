@@ -272,6 +272,81 @@ export type RiskFlagResult = {
   cached: boolean;
 };
 
+// ── AI Recommendation ──────────────────────────────────────────────
+
+export type RecommendationVerdict = 'Strong Buy' | 'Buy' | 'Hold' | 'Sell' | 'Strong Sell';
+export type PositionSizing = 'Full' | 'Half' | 'Starter' | 'Avoid';
+
+export type AIRecommendation = {
+  ticker: string;
+  companyName: string;
+  verdict: RecommendationVerdict;
+  confidenceLevel: 1 | 2 | 3 | 4 | 5;
+  thesis: string;
+  entryLogic: string;
+  keyRisks: string[];
+  positionSizing: PositionSizing;
+  positionSizingRationale: string;
+  catalysts: string[];
+  signalSummary: {
+    compositeScore: number | null;
+    insiderTxnCount: number;
+    insiderBuyValue: number;
+    earningsSentiment: string | null;
+    activistPresent: boolean;
+    riskFlagCount: number;
+    highSeverityFlagCount: number;
+  };
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+  generatedAt: string;
+};
+
+// ── Watchlist ──────────────────────────────────────────────────────
+
+export type WatchlistEntry = {
+  id: number;
+  userId: string;
+  ticker: string;
+  companyName: string;
+  alertThreshold: number;
+  currentScore: number | null;
+  alertTriggered: boolean;
+  lastCheckedAt: string | null;
+  createdAt: string;
+};
+
+// ── Adversarial Debate ─────────────────────────────────────────────
+
+export type AdversarialDebate = {
+  ticker: string;
+  bearCase: {
+    coreArgument: string;
+    fragileAssumptions: string[];
+    likelyFailureMode: string;
+    catalystsThatConfirmBear: string[];
+  };
+  bullRebuttal: {
+    coreCounter: string;
+    bearCaseWeaknesses: string[];
+    asymmetryArgument: string;
+  };
+  debateVerdict: 'Bull wins' | 'Bear wins' | 'Contested';
+  debateVerdictRationale: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+  generatedAt: string;
+};
+
+// ── Research Memo ──────────────────────────────────────────────────
+
+export type MemoSection = {
+  title: string;
+  content: string;
+};
+
 // ── API error shape ────────────────────────────────────────────────
 
 export type ApiError = {

@@ -19,7 +19,7 @@ const SYSTEM_PROMPT =
 // ── Models ─────────────────────────────────────────────────────────
 
 const HAIKU_MODEL = "claude-haiku-4-5-20251001";
-const SONNET_MODEL = "claude-sonnet-4-6-20260401";
+const SONNET_MODEL = "claude-sonnet-4-6";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
