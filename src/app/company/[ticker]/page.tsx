@@ -70,15 +70,61 @@ type ThirteenDGFiling = {
 };
 
 type ActivistAnalysis = {
-  activistThesis: string;
+  thesisCategory: string;
   specificDemands: string[];
   timelineSignals: string[];
   tone: "cooperative" | "cautious" | "hostile";
   catalystRisk: string;
   convergenceNote: string | null;
   filerCount: number;
-  totalPercentDisclosed: number | null;
-  oldestFilingDate: string | null;
+  totalPercentDisclosed: number;
+  oldestFilingDate: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+};
+
+type CompositeScoreData = {
+  ticker: string;
+  total: number;
+  breakdown: {
+    insiderConvictionScore: number;
+    fundamentalsScore: number;
+    valuationScore: number;
+    catalystScore: number;
+  };
+  fundamentals: {
+    trailingPE?: number | null;
+    forwardPE?: number | null;
+    revenueGrowth?: number | null;
+    grossMargins?: number | null;
+    debtToEquity?: number | null;
+    shortPercentOfFloat?: number | null;
+    shortRatio?: number | null;
+  };
+  insiderSignal: { score: number; rationale: string };
+  rationale: string;
+  computedAt: string;
+  cached: boolean;
+};
+
+type EarningsSentimentData = {
+  ticker: string;
+  sentimentDelta: "improving" | "deteriorating" | "stable" | "insufficient_data";
+  keyThemeChanges: string[];
+  redFlags: string[];
+  confidenceSignals: string[];
+  quarterCompared: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+};
+
+type RiskFlagData = {
+  ticker: string;
+  flags: Array<{ category: string; severity: "low" | "medium" | "high"; evidence: string }>;
+  overallRiskLevel: "low" | "medium" | "high" | "critical";
+  filingScanned: string;
   modelUsed: string;
   estimatedCost: number;
   cached: boolean;
@@ -584,6 +630,22 @@ export default function CompanyPage() {
   const [expandedItem4, setExpandedItem4] = useState<Set<number>>(new Set());
   const [expanded8K, setExpanded8K] = useState<Set<string>>(new Set());
 
+  // ── Composite Score state ──────────────────────────────────────
+  const [compositeScore, setCompositeScore] = useState<CompositeScoreData | null>(null);
+  const [compositeLoading, setCompositeLoading] = useState(false);
+  const [compositeError, setCompositeError] = useState("");
+
+  // ── Earnings Sentiment state ───────────────────────────────────
+  const [earningsSentiment, setEarningsSentiment] = useState<EarningsSentimentData | null>(null);
+  const [earningsSentimentPhase, setEarningsSentimentPhase] = useState<"idle" | "ingesting" | "analyzing">("idle");
+  const [earningsSentimentError, setEarningsSentimentError] = useState("");
+
+  // ── Risk Flags state ───────────────────────────────────────────
+  const [riskFlags, setRiskFlags] = useState<RiskFlagData | null>(null);
+  const [riskFlagsLoading, setRiskFlagsLoading] = useState(false);
+  const [riskFlagsError, setRiskFlagsError] = useState("");
+  const [expandedRiskFlag, setExpandedRiskFlag] = useState<Set<number>>(new Set());
+
   // ── Load company data ──────────────────────────────────────────
 
   const loadCompany = useCallback(async () => {
@@ -782,6 +844,69 @@ export default function CompanyPage() {
       setActivistExpanded(false);
     } finally {
       setActivistLoading(false);
+    }
+  }
+
+  async function refreshCompositeScore() {
+    setCompositeScore(null);
+    await fetchCompositeScore();
+  }
+
+  async function fetchCompositeScore() {
+    if (compositeLoading) return;
+    setCompositeLoading(true);
+    setCompositeError("");
+    try {
+      const res = await fetch(`/api/signal/composite?ticker=${encodeURIComponent(ticker)}`);
+      const data: CompositeScoreData & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Score failed");
+      setCompositeScore(data);
+    } catch (e) {
+      setCompositeError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setCompositeLoading(false);
+    }
+  }
+
+  async function fetchEarningsSentiment() {
+    if (earningsSentimentPhase !== "idle") return;
+    setEarningsSentimentError("");
+    // Phase 1: ingest filings
+    setEarningsSentimentPhase("ingesting");
+    try {
+      await fetch(`/api/filings/annual?ticker=${encodeURIComponent(ticker)}`, { method: "POST" });
+    } catch {
+      // Non-fatal — continue to analysis even if ingest partially fails.
+    }
+    // Phase 2: analyze
+    setEarningsSentimentPhase("analyzing");
+    try {
+      const res = await fetch(`/api/analyze/earnings-sentiment?ticker=${encodeURIComponent(ticker)}`);
+      const data: EarningsSentimentData & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Analysis failed");
+      setEarningsSentiment(data);
+    } catch (e) {
+      setEarningsSentimentError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setEarningsSentimentPhase("idle");
+    }
+  }
+
+  async function fetchRiskFlags() {
+    if (riskFlagsLoading) return;
+    setRiskFlagsLoading(true);
+    setRiskFlagsError("");
+    try {
+      // Ensure filings are ingested first.
+      await fetch(`/api/filings/annual?ticker=${encodeURIComponent(ticker)}`, { method: "POST" });
+      const res = await fetch(`/api/analyze/risk-flags?ticker=${encodeURIComponent(ticker)}`);
+      const data: RiskFlagData & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? "Scan failed");
+      setRiskFlags(data);
+    } catch (e) {
+      setRiskFlagsError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setRiskFlagsLoading(false);
     }
   }
 
@@ -1071,6 +1196,256 @@ export default function CompanyPage() {
               </span>
             )}
           </div>
+
+          {/* ── Composite Score Card ── */}
+          {(compositeScore || compositeLoading || compositeError) && (
+            <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #1e2832" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: "#7a8a9a", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>
+                  Composite Conviction Score
+                </span>
+                {compositeScore && (
+                  <button
+                    onClick={() => void refreshCompositeScore()}
+                    disabled={compositeLoading || !isAuthenticated}
+                    title={isAuthenticated ? "Refresh composite score" : "Sign in to use AI features"}
+                    style={{ ...btn("#1e2832"), padding: "2px 8px", fontSize: 11, marginLeft: "auto", opacity: compositeLoading || !isAuthenticated ? 0.5 : 1 }}
+                  >
+                    {compositeLoading ? "…" : "↺ Refresh"}
+                  </button>
+                )}
+              </div>
+              {compositeLoading && !compositeScore && (
+                <p style={{ color: "#7a8a9a", fontSize: 13, margin: 0 }}>Computing composite score…</p>
+              )}
+              {compositeError && !compositeScore && (
+                <p style={{ color: "#ff8a8a", fontSize: 13, margin: 0 }}>{compositeError}</p>
+              )}
+              {compositeScore && (() => {
+                const { total, breakdown, fundamentals: f, rationale, cached: cs } = compositeScore;
+                const scoreBg = total >= 75 ? "#0d2d1a" : total >= 50 ? "#2a2000" : total >= 25 ? "#2a1a00" : "#1a2030";
+                const scoreColor = total >= 75 ? "#6ecf8a" : total >= 50 ? "#ffd080" : total >= 25 ? "#ff8a8a" : "#9aa4ad";
+                const scoreBorder = total >= 75 ? "#1a5a3a" : total >= 50 ? "#5a4a1a" : total >= 25 ? "#5a2a1a" : "#2a3a4a";
+                const shortFloat = f?.shortPercentOfFloat ?? null;
+                return (
+                  <div>
+                    <div style={{ display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+                      {/* Score badge */}
+                      <div style={{ padding: "10px 16px", borderRadius: 10, background: scoreBg, border: `1px solid ${scoreBorder}`, minWidth: 100, textAlign: "center", flexShrink: 0 }}>
+                        <div style={{ fontSize: 32, fontWeight: 800, color: scoreColor, fontVariantNumeric: "tabular-nums" }}>{total}</div>
+                        <div style={{ fontSize: 10, color: "#7a8a9a", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Composite</div>
+                      </div>
+                      {/* Breakdown */}
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Breakdown</div>
+                        {[
+                          { label: "Insider Conviction", score: breakdown.insiderConvictionScore, max: 40 },
+                          { label: "Fundamentals", score: breakdown.fundamentalsScore, max: 25 },
+                          { label: "Valuation", score: breakdown.valuationScore, max: 20 },
+                          { label: "Catalyst", score: breakdown.catalystScore, max: 15 },
+                        ].map((b) => (
+                          <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                            <span style={{ fontSize: 12, color: "#9aa4ad", width: 130, flexShrink: 0 }}>{b.label}</span>
+                            <div style={{ flex: 1, background: "#1a2530", borderRadius: 4, height: 8, overflow: "hidden" }}>
+                              <div style={{ width: `${(b.score / b.max) * 100}%`, height: "100%", background: b.score / b.max >= 0.7 ? "#6ecf8a" : b.score / b.max >= 0.4 ? "#ffd080" : "#4a6a8a", borderRadius: 4 }} />
+                            </div>
+                            <span style={{ fontSize: 12, color: "#c8d4e0", width: 40, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{b.score}/{b.max}</span>
+                          </div>
+                        ))}
+                        {/* Short interest badge */}
+                        {shortFloat != null && (
+                          <div style={{ marginTop: 6 }}>
+                            <span style={{
+                              ...badge(shortFloat > 0.2 ? "#2d0d0d" : shortFloat > 0.05 ? "#2a2000" : "#0d2d1a"),
+                              color: shortFloat > 0.2 ? "#ff8a8a" : shortFloat > 0.05 ? "#ffd080" : "#6ecf8a",
+                              fontSize: 11,
+                            }}>
+                              Short: {(shortFloat * 100).toFixed(1)}% of float
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <p style={{ color: "#7a8a9a", fontSize: 12, margin: "8px 0 0", lineHeight: 1.6 }}>{rationale}</p>
+                    <div style={{ color: "#4a5a6a", fontSize: 11, marginTop: 6, display: "flex", gap: 6 }}>
+                      {cs && <span style={{ color: "#7cc4ff" }}>⚡ cached</span>}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          {!compositeScore && !compositeLoading && !compositeError && (
+            <div style={{ marginBottom: 14, display: "flex", justifyContent: "flex-start" }}>
+              <button
+                onClick={() => void fetchCompositeScore()}
+                disabled={!isAuthenticated}
+                title={isAuthenticated ? "Compute composite conviction score" : "Sign in to use AI features"}
+                style={{ ...btn("#1a2a1a"), padding: "6px 14px", fontSize: 13, opacity: !isAuthenticated ? 0.5 : 1 }}
+              >
+                ✦ Compute Composite Score
+              </button>
+            </div>
+          )}
+
+          {/* ── Earnings Sentiment Card ── */}
+          {(earningsSentiment || earningsSentimentPhase !== "idle" || earningsSentimentError) && (
+            <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #1e2832" }}>
+              <div style={{ fontSize: 11, color: "#7a8a9a", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, marginBottom: 8 }}>
+                Earnings Sentiment
+                {earningsSentiment?.quarterCompared && (
+                  <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 8, color: "#4a5a6a" }}>
+                    — {earningsSentiment.quarterCompared}
+                  </span>
+                )}
+              </div>
+              {earningsSentimentPhase === "ingesting" && (
+                <p style={{ color: "#7a8a9a", fontSize: 13, margin: 0 }}>Ingesting filings…</p>
+              )}
+              {earningsSentimentPhase === "analyzing" && (
+                <p style={{ color: "#7a8a9a", fontSize: 13, margin: 0 }}>Analyzing sentiment…</p>
+              )}
+              {earningsSentimentError && (
+                <p style={{ color: "#ff8a8a", fontSize: 13, margin: 0 }}>{earningsSentimentError}</p>
+              )}
+              {earningsSentiment && earningsSentimentPhase === "idle" && (() => {
+                const { sentimentDelta, keyThemeChanges, redFlags, confidenceSignals, modelUsed: mu, estimatedCost: ec, cached: sc } = earningsSentiment;
+                const deltaBg: Record<string, string> = { improving: "#0d2d1a", deteriorating: "#2d0d0d", stable: "#1a2030", insufficient_data: "#1a1a2a" };
+                const deltaColor: Record<string, string> = { improving: "#6ecf8a", deteriorating: "#ff8a8a", stable: "#9aa4ad", insufficient_data: "#7a8a9a" };
+                const deltaIcon: Record<string, string> = { improving: "↑", deteriorating: "↓", stable: "→", insufficient_data: "?" };
+                return (
+                  <div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+                      <span style={{ ...badge(deltaBg[sentimentDelta] ?? "#1a2030"), color: deltaColor[sentimentDelta] ?? "#9aa4ad", fontWeight: 700 }}>
+                        {deltaIcon[sentimentDelta] ?? ""} {sentimentDelta.replace("_", " ")}
+                      </span>
+                      {sc && <span style={{ color: "#7cc4ff", fontSize: 11, marginLeft: "auto" }}>⚡ cached</span>}
+                    </div>
+                    {keyThemeChanges.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>Key Changes</div>
+                        <ul style={{ margin: 0, paddingLeft: 16, color: "#9aa4ad", fontSize: 12, lineHeight: 1.7 }}>
+                          {keyThemeChanges.map((c, i) => <li key={i}><span style={{ color: "#5a6a7a" }}>•</span> {c}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {redFlags.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>Red Flags</div>
+                        <ul style={{ margin: 0, paddingLeft: 16, color: "#ff8a8a", fontSize: 12, lineHeight: 1.7 }}>
+                          {redFlags.map((f, i) => <li key={i}>⚠ {f}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {confidenceSignals.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, color: "#7a8a9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>Confidence Signals</div>
+                        <ul style={{ margin: 0, paddingLeft: 16, color: "#6ecf8a", fontSize: 12, lineHeight: 1.7 }}>
+                          {confidenceSignals.map((s, i) => <li key={i}>✓ {s}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    <div style={{ color: "#4a5a6a", fontSize: 11, display: "flex", gap: 6 }}>
+                      <span>{mu}</span><span>·</span><span>${ec.toFixed(6)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          {!earningsSentiment && earningsSentimentPhase === "idle" && !earningsSentimentError && (
+            <div style={{ marginBottom: 14, display: "flex", justifyContent: "flex-start" }}>
+              <button
+                onClick={() => void fetchEarningsSentiment()}
+                disabled={!isAuthenticated}
+                title={isAuthenticated ? "Analyze earnings sentiment from MD&A" : "Sign in to use AI features"}
+                style={{ ...btn("#1a2a3a"), padding: "6px 14px", fontSize: 13, opacity: !isAuthenticated ? 0.5 : 1 }}
+              >
+                ✦ Analyze Earnings Sentiment
+              </button>
+            </div>
+          )}
+
+          {/* ── Risk Flags Card ── */}
+          {riskFlags && riskFlags.overallRiskLevel === "critical" && (
+            <div style={{ marginBottom: 14, padding: "12px 16px", background: "#2d0d0d", borderRadius: 8, border: "1px solid #5a1a1a", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 16 }}>⚠</span>
+              <span style={{ color: "#ff8a8a", fontWeight: 700, fontSize: 14 }}>Critical risk flags detected in {riskFlags.filingScanned}</span>
+            </div>
+          )}
+          {riskFlags && riskFlags.overallRiskLevel === "high" && (
+            <div style={{ marginBottom: 14, padding: "12px 16px", background: "#2a1a00", borderRadius: 8, border: "1px solid #5a4a1a", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 16 }}>⚠</span>
+              <span style={{ color: "#ffd080", fontWeight: 700, fontSize: 14 }}>Elevated risk flags detected in {riskFlags.filingScanned}</span>
+            </div>
+          )}
+          {(riskFlags || riskFlagsLoading || riskFlagsError) && (
+            <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #1e2832" }}>
+              <div style={{ fontSize: 11, color: "#7a8a9a", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, marginBottom: 8 }}>
+                Risk Flags
+                {riskFlags?.filingScanned && (
+                  <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 8, color: "#4a5a6a" }}>
+                    — scanned {riskFlags.filingScanned}
+                  </span>
+                )}
+              </div>
+              {riskFlagsLoading && <p style={{ color: "#7a8a9a", fontSize: 13, margin: 0 }}>Scanning filing…</p>}
+              {riskFlagsError && <p style={{ color: "#ff8a8a", fontSize: 13, margin: 0 }}>{riskFlagsError}</p>}
+              {riskFlags && !riskFlagsLoading && (() => {
+                const { flags, overallRiskLevel, modelUsed: mu, estimatedCost: ec, cached: rc } = riskFlags;
+                const severityBg: Record<string, string> = { high: "#2d0d0d", medium: "#2a1a00", low: "#1a2030" };
+                const severityColor: Record<string, string> = { high: "#ff8a8a", medium: "#ffd080", low: "#9aa4ad" };
+                return (
+                  <div>
+                    {flags.length === 0 ? (
+                      <p style={{ color: "#6ecf8a", fontSize: 13, margin: "0 0 8px" }}>✓ No material risk flags detected</p>
+                    ) : (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                        {flags.map((f, i) => (
+                          <span
+                            key={i}
+                            onClick={() => setExpandedRiskFlag((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(i)) next.delete(i); else next.add(i);
+                              return next;
+                            })}
+                            style={{ ...badge(severityBg[f.severity] ?? "#1a2030"), color: severityColor[f.severity] ?? "#9aa4ad", cursor: "pointer", fontSize: 12 }}
+                            title="Click to expand"
+                          >
+                            {f.category}
+                            {expandedRiskFlag.has(i) && (
+                              <span style={{ display: "block", fontSize: 11, color: "#9aa4ad", fontWeight: 400, marginTop: 2, maxWidth: 260 }}>
+                                {f.evidence}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ color: "#4a5a6a", fontSize: 11, display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ ...badge(overallRiskLevel === "critical" ? "#2d0d0d" : overallRiskLevel === "high" ? "#2a1a00" : overallRiskLevel === "medium" ? "#1a1a2a" : "#0d2d1a"), color: overallRiskLevel === "critical" || overallRiskLevel === "high" ? "#ff8a8a" : overallRiskLevel === "medium" ? "#9aa4ad" : "#6ecf8a", fontSize: 11 }}>
+                        {overallRiskLevel}
+                      </span>
+                      <span>{mu}</span><span>·</span><span>${ec.toFixed(6)}</span>
+                      {rc && <span style={{ color: "#7cc4ff" }}>⚡ cached</span>}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          {!riskFlags && !riskFlagsLoading && !riskFlagsError && (
+            <div style={{ marginBottom: 14, display: "flex", justifyContent: "flex-start" }}>
+              <button
+                onClick={() => void fetchRiskFlags()}
+                disabled={!isAuthenticated}
+                title={isAuthenticated ? "Scan most recent 10-K for risk flags" : "Sign in to use AI features"}
+                style={{ ...btn("#2a1a1a"), padding: "6px 14px", fontSize: 13, opacity: !isAuthenticated ? 0.5 : 1 }}
+              >
+                ✦ Scan for Risk Flags
+              </button>
+            </div>
+          )}
 
           {/* ── Tabs ── */}
           <div style={{ display: "flex", gap: 16, borderBottom: "1px solid #1e2832", marginBottom: 12 }}>
@@ -1609,13 +1984,13 @@ export default function CompanyPage() {
                   cautious: "#ffd080",
                   hostile: "#ff8a8a",
                 };
-                const bg = thesisBg[activistAnalysis.activistThesis] ?? "#1a1a2a";
-                const color = thesisColor[activistAnalysis.activistThesis] ?? "#c084fc";
+                const bg = thesisBg[activistAnalysis.thesisCategory] ?? "#1a1a2a";
+                const color = thesisColor[activistAnalysis.thesisCategory] ?? "#c084fc";
                 return (
                   <div style={{ marginBottom: 14, padding: "14px 16px", background: "#090e14", borderRadius: 8, border: "1px solid #2a1a3a" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                       <span style={{ ...badge(bg), color, fontWeight: 700, fontSize: 13 }}>
-                        {activistAnalysis.activistThesis}
+                        {activistAnalysis.thesisCategory}
                       </span>
                       <span style={{ ...badge(toneBg[activistAnalysis.tone] ?? "#1a2030"), color: toneColor[activistAnalysis.tone] ?? "#9aa4ad", fontSize: 12 }}>
                         {activistAnalysis.tone}

@@ -134,6 +134,140 @@ The response includes:
 - `shortInterest` — short % of float and days to cover from Yahoo Finance, or null
 - `signalScore` — computed 0–100 insider conviction score with breakdown and rationale, or null
 
+### GET /api/signal/composite
+
+**Requires authentication.** Computes a Composite Conviction Score (0–100) combining the Insider Conviction Score with fundamentals quality, valuation, and catalyst signals. Results are cached for 6 hours.
+
+```
+GET /api/signal/composite?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "total": 72,
+  "breakdown": {
+    "insiderConvictionScore": 28,
+    "fundamentalsScore": 19,
+    "valuationScore": 15,
+    "catalystScore": 10
+  },
+  "fundamentals": { "trailingPE": 28.4, "revenueGrowth": 0.08, "grossMargins": 0.46, ... },
+  "insiderSignal": { "score": 70, "rationale": "...", "breakdown": { ... } },
+  "rationale": "Moderate composite signal (72/100). ICS 70/100 → 28/40 pts. Strong fundamentals (8% rev growth, 46% gross margin).",
+  "computedAt": "2026-04-12T10:00:00.000Z",
+  "cached": false
+}
+```
+
+Scoring breakdown:
+| Component | Max pts | Signals |
+|---|---|---|
+| Insider Conviction | 40 | Existing ICS × 0.40 |
+| Fundamentals | 25 | Revenue growth + gross margins + debt-to-equity |
+| Valuation | 20 | Trailing P/E bands (deep value = 20, growth = 8) |
+| Catalyst | 15 | Short squeeze setup + activist filer bonus |
+
+### POST /api/filings/annual
+
+**Requires authentication.** Fetches the last 4 quarterly (10-Q) and 2 annual (10-K) filings for a ticker from EDGAR, extracts MD&A excerpts, and upserts into the `annual_filings` table.
+
+```
+POST /api/filings/annual?ticker=AAPL
+```
+
+#### Response
+
+```json
+{ "ticker": "AAPL", "ingested": 6 }
+```
+
+### GET /api/analyze/earnings-sentiment
+
+**Requires authentication.** Compares the two most recent MD&A sections for a ticker using Claude Sonnet to detect tone shifts, new risk language, and management confidence signals. Cached for 24 hours. If fewer than 2 filings exist, returns `sentimentDelta: "insufficient_data"` with a suggestion to run `POST /api/filings/annual` first.
+
+```
+GET /api/analyze/earnings-sentiment?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "sentimentDelta": "improving",
+  "keyThemeChanges": ["Services revenue growth now primary narrative", "Supply chain risk language removed"],
+  "redFlags": [],
+  "confidenceSignals": ["Full-year guidance reaffirmed", "Buyback program expanded"],
+  "quarterCompared": "Q1 2026 vs Q4 2025",
+  "modelUsed": "claude-sonnet-4-6-20260401",
+  "estimatedCost": 0.000842,
+  "cached": false
+}
+```
+
+### GET /api/analyze/earnings-sentiment
+
+### GET /api/analyze/risk-flags
+
+**Requires authentication.** Scans the most recent 10-K (or 10-Q fallback) for 10 categories of structural red flags using Claude Haiku. Cached for 24 hours. Returns 404 if no filings are found — run `POST /api/filings/annual` first.
+
+```
+GET /api/analyze/risk-flags?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "flags": [
+    { "category": "Revenue concentration", "severity": "medium", "evidence": "One customer represents 22% of net revenue" }
+  ],
+  "overallRiskLevel": "medium",
+  "filingScanned": "2025-09-30",
+  "modelUsed": "claude-haiku-4-5-20251001",
+  "estimatedCost": 0.000215,
+  "cached": false
+}
+```
+
+Risk flag categories scanned: Going concern, Covenant violation, Goodwill impairment, Revenue concentration, Planned dilution, Insider share pledge, Auditor change, Material weakness, Liquidity risk, Litigation risk.
+
+Severity rules: `high` = immediate financial risk, `medium` = structural concern, `low` = minor disclosure. `overallRiskLevel` is `critical` if any high flags present, `high` if 3+ medium, `medium` if 1–2 medium, `low` otherwise.
+
+### GET /api/analyze/activist
+
+**Requires authentication.** Analyzes 13D/G Item 4 "Purpose of Transaction" excerpts using Claude Sonnet to classify the activist thesis, extract demands, and assess tone. Cached for 12 hours in a dedicated `activist_analysis_cache` table.
+
+```
+GET /api/analyze/activist?ticker=AAPL
+```
+
+#### Response
+
+```json
+{
+  "ticker": "AAPL",
+  "thesisCategory": "Capital Return / Buyback",
+  "specificDemands": ["Accelerate share repurchase program", "..."],
+  "timelineSignals": ["Annual meeting deadline: April 2026"],
+  "tone": "cooperative",
+  "catalystRisk": "Board may reject demands without a proxy fight threat",
+  "convergenceNote": null,
+  "filerCount": 1,
+  "totalPercentDisclosed": 8.2,
+  "oldestFilingDate": "2025-11-14",
+  "modelUsed": "claude-sonnet-4-6-20260401",
+  "estimatedCost": 0.000634,
+  "cached": false
+}
+```
+
+Thesis categories: `Operational Improvement`, `Board Reconstitution`, `Strategic Sale / M&A`, `Capital Return / Buyback`, `Management Change`, `Business Separation / Spin-off`, `Balance Sheet Restructuring`, `Undervaluation / Passive Accumulation`.
+
 ### GET /api/summarize
 
 **Requires authentication.** AI-powered filing summarizer using the Anthropic API with a two-tier model strategy. Returns `401` if the request has no valid Supabase session.
@@ -167,12 +301,12 @@ Summaries are cached in Supabase. Subsequent requests for the same filing URL re
 
 ## Authentication
 
-AI features (summarization) are gated behind Supabase Auth. Users must sign in via email/password from the top-right of the page. The auth flow:
+All AI features (filing summarization, composite scoring, earnings sentiment, risk flags, activist analysis) are gated behind Supabase Auth. Users must sign in via email/password from the top-right of the page. The auth flow:
 
 1. **Client-side** — `@supabase/ssr` browser client manages sessions via cookies. Sign-in/sign-up forms are inline in the page header.
 2. **Server-side** — `/api/summarize` verifies the session cookie using `getAuthUser()` from `src/lib/auth.ts`. Unauthenticated requests get a `401`.
 3. **OAuth callback** — `/auth/callback` handles the code exchange for email confirmation links.
-4. **UI gating** — AI buttons (▾ AI, 🔬, ✦ Summarize All) are disabled and dimmed when not signed in.
+4. **UI gating** — All AI buttons (▾ AI, 🔬, ✦ Summarize All, ✦ Compute Composite Score, ✦ Analyze Earnings Sentiment, ✦ Scan for Risk Flags, ✦ Analyze Activist Thesis) are disabled and dimmed when not signed in.
 
 To enable auth, you need `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in your environment. In the Supabase dashboard, enable Email auth under Authentication → Providers.
 
@@ -211,7 +345,28 @@ Scores parsed Form 4 insider transactions on a 0–100 scale using five weighted
 | Relative holdings | 15 | Buying >10% of existing holdings = strong conviction |
 | Price dip | 15 | Buying near 52-week low (via Yahoo Finance) |
 
-Returns the score, a plain-English rationale, and raw signal breakdown.
+Returns the Insider Conviction Score (0–100), a plain-English rationale, raw breakdown, and attached fundamentals/short-interest data.
+
+### compositeScore (`src/lib/compositeScore.ts`)
+
+Wraps `scoreSignal()` to produce a four-component Composite Conviction Score (0–100):
+
+| Component | Max pts | Method |
+|---|---|---|
+| Insider Conviction | 40 | ICS × 0.40 |
+| Fundamentals | 25 | Revenue growth + gross margins + D/E bands |
+| Valuation | 20 | Trailing P/E bands (8–15 = deep value = 20 pts) |
+| Catalyst | 15 | Short float squeeze setup + activist filer bonus |
+
+Generates a plain-English rationale naming the top 2–3 contributing factors.
+
+### fundamentals (`src/lib/fundamentals.ts`)
+
+Extended Yahoo Finance fundamentals fetcher. Retrieves `financialData` and `defaultKeyStatistics` modules from the Yahoo Finance v10 quoteSummary API, returning a `FundamentalsSnapshot` with 12 fields including `forwardPE`, `operatingMargins`, `totalDebt`, `returnOnEquity`, `shortPercentOfFloat`, and `shortRatio`. Results are cached in the `fundamentals_cache` Supabase table (JSONB) with a 24-hour TTL.
+
+### parseAnnualFiling (`src/lib/parseAnnualFiling.ts`)
+
+Ingests 10-Q and 10-K filings into Supabase. Calls `fetchAnnualFilings()` from `sec.ts` (last 4 quarterly + 2 annual filings), then upserts each result into the `annual_filings` table via conflict resolution on `(ticker, form_type, filing_date)`.
 
 ### costs (`src/lib/costs.ts`)
 
@@ -319,21 +474,48 @@ create table transactions (
 );
 ```
 
-The `filing_summaries` table (for AI summarization caching) remains unchanged:
+The `filing_summaries` table (for AI summarization caching) is unchanged.
+
+Additional cache tables created by `migrations/006_fundamentals_cache.sql`, `migrations/007_annual_filings.sql`, `migrations/009_redesign_thirteen_dg_filings.sql`, and `migrations/010_ai_analysis_caches.sql`:
 
 ```sql
-create table filing_summaries (
-  id bigint generated always as identity primary key,
-  filing_url text not null,
-  deep_analysis boolean not null default false,
-  summary text not null,
-  impact_rating text not null,
-  flags jsonb default '[]',
-  model_used text not null,
-  estimated_cost numeric not null,
-  created_at timestamptz not null default now(),
-  unique (filing_url, deep_analysis)
+-- Yahoo Finance fundamentals (24h TTL)
+create table fundamentals_cache (
+  ticker     text primary key,
+  data       jsonb not null,          -- FundamentalsSnapshot JSON
+  fetched_at timestamptz not null default now()
 );
+
+-- 10-Q / 10-K MD&A excerpts
+create table annual_filings (
+  id               bigserial primary key,
+  ticker           text not null,
+  form_type        text not null,
+  filing_date      date not null,
+  period_of_report date,
+  primary_doc_url  text,
+  mda_excerpt      text not null default '',
+  created_at       timestamptz not null default now(),
+  unique (ticker, form_type, filing_date)
+);
+
+-- 13D / 13G activist filings
+create table thirteen_dg_filings (
+  id bigint generated always as identity primary key,
+  accession_no           text not null unique,
+  filer_name             text not null,
+  subject_company_ticker text,
+  filing_date            text not null,
+  percent_of_class       numeric,
+  item4_excerpt          text,
+  ...
+);
+
+-- AI analysis cache tables (6h / 12h / 24h TTL enforced in app code)
+create table composite_score_cache   (ticker text unique, total numeric, breakdown jsonb, ...);
+create table earnings_sentiment_cache(ticker text unique, result jsonb, computed_at timestamptz);
+create table activist_analysis_cache (ticker text unique, result jsonb, computed_at timestamptz);
+create table risk_flag_cache         (ticker text unique, result jsonb, computed_at timestamptz);
 ```
 
 Open <http://localhost:3000>.
@@ -360,25 +542,53 @@ npx vercel --prod    # deploy to production
 src/
   app/
     api/
-      companies/route.ts     # GET /api/companies
+      companies/
+        route.ts              # GET /api/companies
+        [ticker]/route.ts     # GET /api/companies/[ticker]
       filings/
-        route.ts             # GET /api/filings (EDGAR search)
-        ingest/route.ts      # POST /api/filings/ingest
-      summarize/route.ts     # GET /api/summarize
+        route.ts              # GET /api/filings (EDGAR search)
+        ingest/route.ts       # POST /api/filings/ingest
+        annual/route.ts       # POST /api/filings/annual (10-Q/10-K ingest)
+      signal/
+        composite/route.ts    # GET /api/signal/composite
+      analyze/
+        activist/route.ts     # GET /api/analyze/activist
+        earnings-sentiment/route.ts  # GET /api/analyze/earnings-sentiment
+        risk-flags/route.ts   # GET /api/analyze/risk-flags
+      summarize/route.ts      # GET /api/summarize
+    company/[ticker]/page.tsx # company detail page (client component)
     layout.tsx
-    page.tsx                 # company-centric insider tracking UI
+    page.tsx                  # company-centric insider tracking UI
   lib/
-    anthropic.ts             # shared Anthropic client
-    auth.ts                  # server-side auth verification helper
-    costs.ts                 # token cost estimator
-    parseForm4.ts            # ownership XML parser (Forms 3/4/5)
-    scoreSignal.ts           # insider transaction scoring engine
-    sec.ts                   # rate-limited EDGAR fetch + search
-    supabase.ts              # shared Supabase client (service role)
-    supabase-browser.ts      # browser Supabase client (anon key)
-    types.ts                 # shared TypeScript type definitions
+    anthropic.ts              # shared Anthropic client
+    auth.ts                   # server-side auth verification helper
+    compositeScore.ts         # composite conviction scorer (4 components)
+    costs.ts                  # token cost estimator
+    fundamentals.ts           # extended Yahoo Finance fundamentals fetcher
+    ingestJobs.ts             # in-memory background job store
+    marketData.ts             # short interest fetcher (Yahoo Finance)
+    parse13DG.ts              # 13D/G filing parser
+    parse13F.ts               # 13F holdings parser
+    parse8K.ts                # 8-K filing parser
+    parseAnnualFiling.ts      # 10-Q/10-K ingest → annual_filings table
+    parseForm4.ts             # ownership XML parser (Forms 3/4/5)
+    scoreSignal.ts            # insider transaction scoring engine (ICS 0–100)
+    sec.ts                    # rate-limited EDGAR fetch + search + annual filings
+    supabase.ts               # shared Supabase client (service role)
+    supabase-browser.ts       # browser Supabase client (anon key)
+    types.ts                  # shared TypeScript type definitions
 scripts/
-  migrate.ts                 # database migration runner
+  migrate.ts                  # database migration runner
 migrations/
-  001_normalized_schema.sql  # companies, insiders, transactions tables
+  001_normalized_schema.sql   # companies, insiders, transactions tables
+  002_8k_and_13f.sql
+  003_fix_13f_unique_constraint.sql
+  004_add_issuer_name_to_summaries.sql
+  005_add_summary_detail_columns.sql
+  006_fundamentals_cache.sql  # fundamentals_cache table
+  007_annual_filings.sql      # annual_filings table
+  008_thirteen_dg_filings.sql # initial thirteen_dg_filings table
+  009_redesign_thirteen_dg_filings.sql  # schema redesign
+  010_ai_analysis_caches.sql  # composite_score_cache, earnings_sentiment_cache,
+                              # activist_analysis_cache, risk_flag_cache
 ```

@@ -44,11 +44,18 @@ export type SignalBreakdown = {
 };
 
 export type FundamentalsSnapshot = {
+  ticker?: string;
   trailingPE: number | null;
+  forwardPE?: number | null;
   revenueGrowth: number | null;
   grossMargins: number | null;
+  operatingMargins?: number | null;
   totalCash: number | null;
+  totalDebt?: number | null;
   debtToEquity: number | null;
+  returnOnEquity?: number | null;
+  shortPercentOfFloat?: number | null;
+  shortRatio?: number | null;
   /** ISO 8601 timestamp of when this snapshot was fetched. */
   fetchedAt: string;
 };
@@ -168,6 +175,101 @@ export type ThirteenDGFiling = {
   item4_excerpt: string | null;
   primary_doc_url: string | null;
   created_at: string;
+};
+
+// ── Composite conviction score ─────────────────────────────────────
+
+export type CompositeScoreBreakdown = {
+  insiderConvictionScore: number;  // 0–40 pts
+  fundamentalsScore: number;       // 0–25 pts
+  valuationScore: number;          // 0–20 pts
+  catalystScore: number;           // 0–15 pts
+};
+
+export type CompositeScore = {
+  ticker: string;
+  total: number;
+  breakdown: CompositeScoreBreakdown;
+  fundamentals: FundamentalsSnapshot;
+  insiderSignal: ScoredSignal;
+  rationale: string;
+  computedAt: string;
+};
+
+// ── Annual filings ────────────────────────────────────────────────
+
+export type AnnualFiling = {
+  id: number;
+  ticker: string;
+  formType: '10-Q' | '10-K';
+  filingDate: string;
+  periodOfReport: string;
+  primaryDocUrl: string;
+  mdaExcerpt: string;
+  createdAt: string;
+};
+
+// ── Earnings sentiment ────────────────────────────────────────────
+
+export type EarningsSentimentResult = {
+  ticker: string;
+  sentimentDelta: 'improving' | 'deteriorating' | 'stable' | 'insufficient_data';
+  keyThemeChanges: string[];
+  redFlags: string[];
+  confidenceSignals: string[];
+  quarterCompared: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+};
+
+// ── Activist analysis (typed) ──────────────────────────────────────
+
+export type ActivistThesisCategory =
+  | 'Operational Improvement'
+  | 'Board Reconstitution'
+  | 'Strategic Sale / M&A'
+  | 'Capital Return / Buyback'
+  | 'Management Change'
+  | 'Business Separation / Spin-off'
+  | 'Balance Sheet Restructuring'
+  | 'Undervaluation / Passive Accumulation';
+
+export type ActivistAnalysisResult = {
+  ticker: string;
+  thesisCategory: ActivistThesisCategory;
+  specificDemands: string[];
+  timelineSignals: string[];
+  tone: 'cooperative' | 'cautious' | 'hostile';
+  catalystRisk: string;
+  convergenceNote: string | null;
+  filerCount: number;
+  totalPercentDisclosed: number;
+  oldestFilingDate: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
+};
+
+// ── Risk flags ─────────────────────────────────────────────────────
+
+export type RiskFlagSeverity = 'low' | 'medium' | 'high';
+
+export type RiskFlag = {
+  category: string;
+  severity: RiskFlagSeverity;
+  /** Brief quote or paraphrase from the filing (<80 chars). */
+  evidence: string;
+};
+
+export type RiskFlagResult = {
+  ticker: string;
+  flags: RiskFlag[];
+  overallRiskLevel: 'low' | 'medium' | 'high' | 'critical';
+  filingScanned: string;
+  modelUsed: string;
+  estimatedCost: number;
+  cached: boolean;
 };
 
 // ── API error shape ────────────────────────────────────────────────
