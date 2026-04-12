@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getAuthUser, unauthorizedResponse } from "@/lib/auth";
-import type { ApiError } from "@/lib/types";
+import { fetchShortInterest } from "@/lib/marketData";
+import { scoreSignal } from "@/lib/scoreSignal";
+import type { ApiError, ParsedForm4Transaction } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -147,6 +149,45 @@ export async function GET(
 
   if (thirteenDGErr) return errorJson("Failed to query 13D/13G filings", thirteenDGErr.message, 500);
 
+  // Fetch annual filings (10-Q/10-K MD&A excerpts)
+  type AnnualFilingRow = {
+    id: number; ticker: string; form_type: string; filing_date: string;
+    period_of_report: string | null; primary_doc_url: string | null;
+    mda_excerpt: string;
+  };
+  const { data: annualFilings, error: annualErr } = await supabase
+    .from("annual_filings")
+    .select("id, ticker, form_type, filing_date, period_of_report, primary_doc_url, mda_excerpt")
+    .ilike("ticker", tickerUpper)
+    .order("filing_date", { ascending: false })
+    .limit(20) as DbResult<AnnualFilingRow>;
+
+  if (annualErr) return errorJson("Failed to query annual filings", annualErr.message, 500);
+
+  // Fetch fundamentals from cache
+  type FundamentalsRow = {
+    ticker: string;
+    data: {
+      trailingPE: number | null;
+      revenueGrowth: number | null;
+      grossMargins: number | null;
+      totalCash: number | null;
+      debtToEquity: number | null;
+      fetchedAt: string;
+    };
+    fetched_at: string;
+  };
+  const { data: fundRows } = await supabase
+    .from("fundamentals_cache")
+    .select("ticker, data, fetched_at")
+    .eq("ticker", tickerUpper)
+    .limit(1) as DbResult<FundamentalsRow>;
+
+  const fundamentalsData = fundRows?.[0]?.data ?? null;
+
+  // Fetch short interest in parallel-ish (non-blocking)
+  const shortInterestData = await fetchShortInterest(tickerUpper);
+
   // ── Fetch cached summaries ──
   const filingUrls = [...new Set((txns ?? []).map((t) => t.filing_url))];
 
@@ -262,12 +303,14 @@ export async function GET(
     thirteenFHoldings: matchedThirteenFs.map((h) => ({
       id: h.id,
       accessionNo: h.accession_no,
+      filerName: h.filer_name,
       periodOfReport: h.period_of_report,
       filingDate: h.filing_date,
       cusip: h.cusip,
       companyName: h.company_name,
       valueUsd: h.value_usd,
       shares: h.shares,
+      investmentDiscretion: h.investment_discretion,
       putCall: h.put_call,
     })),
     thirteenDGFilings: (thirteenDGs ?? []).map((f) => ({
@@ -286,7 +329,44 @@ export async function GET(
       item4Excerpt: f.item4_excerpt,
       primaryDocUrl: f.primary_doc_url,
     })),
+    annualFilings: (annualFilings ?? []).map((af) => ({
+      id: af.id,
+      formType: af.form_type,
+      filingDate: af.filing_date,
+      periodOfReport: af.period_of_report,
+      primaryDocUrl: af.primary_doc_url,
+      mdaExcerpt: af.mda_excerpt,
+    })),
   };
+
+  // ── Compute signal score ──
+  // Convert DB transactions to ParsedForm4Transaction shape for scoring
+  const scoringTxns: ParsedForm4Transaction[] = [];
+  for (const ins of insidersWithTxns) {
+    for (const t of ins.transactions) {
+      scoringTxns.push({
+        officerName: ins.name,
+        officerTitle: ins.title ?? "",
+        transactionType: t.transactionType as ParsedForm4Transaction["transactionType"],
+        transactionCode: t.transactionCode ?? "",
+        sharesTraded: t.shares,
+        pricePerShare: t.pricePerShare,
+        totalValue: t.totalValue,
+        sharesOwnedAfter: t.sharesOwnedAfter,
+        transactionDate: t.transactionDate,
+        isDirectOwnership: t.isDirectOwnership,
+      });
+    }
+  }
+
+  let signalScore = null;
+  try {
+    if (company.ticker && scoringTxns.length > 0) {
+      signalScore = await scoreSignal(company.ticker, scoringTxns);
+    }
+  } catch {
+    // Signal scoring failure is non-fatal
+  }
 
   // Build summaries dict
   const summaries: Record<string, {
@@ -309,5 +389,11 @@ export async function GET(
     };
   }
 
-  return NextResponse.json({ company: result, summaries });
+  return NextResponse.json({
+    company: result,
+    summaries,
+    fundamentals: fundamentalsData,
+    shortInterest: shortInterestData,
+    signalScore,
+  });
 }
